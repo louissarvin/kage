@@ -43,4 +43,7 @@ pub enum ShadowVestError {
 
     #[msg("Invalid token mint")]
     InvalidTokenMint,
+
+    #[msg("Position does not belong to this organization")]
+    InvalidPositionOrganization,
 }

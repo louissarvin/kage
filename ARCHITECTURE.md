@@ -13,6 +13,8 @@
 | **Noir ZK** | [noir-lang.org/docs](https://noir-lang.org/docs/) | [GitHub](https://github.com/noir-lang/noir) | [NoirJS](https://noir-lang.org/docs/tutorials/noirjs_app) |
 | **Radr ShadowPay** | [radrlabs.io/docs](https://www.radrlabs.io/docs) | [SDK](https://github.com/Radrdotfun/shadowpay-sdk) | [API](https://registry.scalar.com/@radr/apis/shadowpay-api) |
 | **Stealth Addresses** | [EIP-5564](https://eips.ethereum.org/EIPS/eip-5564) | [Zera SDK](https://github.com/jskoiz/zeraprivacy) | [@noble/curves](https://github.com/paulmillr/noble-curves) |
+| **Circle CCTP** | [developers.circle.com/cctp](https://developers.circle.com/cctp) | [Solana Contracts](https://github.com/circlefin/solana-cctp-contracts) | [CCTP Guide](https://developers.circle.com/stablecoins/cctp-getting-started) |
+| **USDC** | [circle.com/usdc](https://www.circle.com/usdc) | [Token Program](https://spl.solana.com/token) | [Solana: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v](https://solscan.io/token/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v) |
 | **Anchor** | [anchor-lang.com](https://www.anchor-lang.com) | [GitHub](https://github.com/coral-xyz/anchor) | [Rust Docs](https://docs.rs/anchor-lang/latest/anchor_lang/) |
 | **Solana** | [solana.com/docs](https://solana.com/docs) | [GitHub](https://github.com/solana-labs/solana) | [Web3.js](https://solana-labs.github.io/solana-web3.js/) |
 
@@ -20,15 +22,24 @@
 
 ## Executive Summary
 
-ShadowVest is a privacy-preserving payroll and vesting protocol that combines four complementary privacy technologies:
+ShadowVest is a privacy-preserving payroll and vesting protocol that combines six complementary technologies:
 
 | Layer | Technology | Purpose | Docs |
 |-------|------------|---------|------|
-| **L1** | Light Protocol | Compressed state storage (5000x cost reduction) | [Docs](https://www.zkcompression.com) |
+| **L0** | USDC + Circle CCTP | Cross-chain payments (native USDC, no wrapped tokens) | [CCTP Docs](https://developers.circle.com/cctp) |
+| **L1** | Light Protocol | Compressed state & tokens (400-5000x cost reduction) | [Docs](https://www.zkcompression.com) |
 | **L2** | Arcium MPC | Confidential computation (encrypted calculations) | [Docs](https://docs.arcium.com) |
 | **L3** | Noir ZK Circuits | Zero-knowledge proof verification | [Docs](https://noir-lang.org/docs/) |
 | **L4** | Radr Labs ShadowPay | Shielded settlement (amount privacy + relayers) | [Docs](https://www.radrlabs.io/docs) |
 | **L5** | ECDH Stealth Addresses | One-time receiver addresses (receiver privacy) | [EIP-5564](https://eips.ethereum.org/EIPS/eip-5564) |
+
+### Why USDC?
+
+ShadowVest uses **USDC** as the primary payment token because:
+- **Stable value** - Employees receive predictable salary amounts
+- **Cross-chain native** - CCTP enables transfers to 9+ chains without wrapped tokens
+- **Widely supported** - Accepted by exchanges, DeFi, and merchants globally
+- **Compressible** - Works with Light Protocol for 400x cheaper distribution
 
 ---
 
@@ -52,34 +63,312 @@ ShadowVest is a privacy-preserving payroll and vesting protocol that combines fo
        ▼                   ▼                   ▼
 ┌───────────────────────────────────────────────────────────┐
 │                   ShadowVest Protocol                      │
-│  ┌─────────┐  ┌─────────┐  ┌─────┐  ┌──────┐  ┌───────┐ │
-│  │ Light   │  │ Arcium  │  │Noir │  │ Radr │  │Stealth│ │
-│  │Protocol │◄─┤  MPC    │◄─┤ ZK  │◄─┤ Labs │◄─┤Address│ │
-│  │(storage)│  │(compute)│  │(proof)│ │(settle)│ │(recv) │ │
-│  └─────────┘  └─────────┘  └─────┘  └──────┘  └───────┘ │
+│                                                            │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │                    USDC + CCTP                       │  │
+│  │         (Cross-chain: ETH, Base, Arb, Sol...)       │  │
+│  └─────────────────────────┬───────────────────────────┘  │
+│                            ▼                               │
+│  ┌─────────┐  ┌─────────┐  ┌─────┐  ┌──────┐  ┌───────┐  │
+│  │ Light   │  │ Arcium  │  │Noir │  │ Radr │  │Stealth│  │
+│  │Protocol │◄─┤  MPC    │◄─┤ ZK  │◄─┤ Labs │◄─┤Address│  │
+│  │(compress)│ │(compute)│  │(proof)│ │(settle)│ │(recv) │  │
+│  └─────────┘  └─────────┘  └─────┘  └──────┘  └───────┘  │
 └───────────────────────────────────────────────────────────┘
+```
+
+### 1.3 Cross-Chain Payroll Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    SHADOWVEST CROSS-CHAIN PAYROLL                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  DEPOSIT (Employer can fund from any CCTP-supported chain)              │
+│                                                                         │
+│  Ethereum ──┐                                                           │
+│  Base ──────┼──► CCTP ──► Solana USDC ──► Light Protocol ──► Compress   │
+│  Arbitrum ──┘    (burn)    (mint)         (token pool)       (c-USDC)   │
+│                                                                         │
+│  VESTING (Privacy-preserving on Solana)                                 │
+│                                                                         │
+│  c-USDC ──► Arcium MPC ──► Encrypted Vesting ──► ZK Proofs              │
+│             (amounts hidden)  (positions)        (eligibility)          │
+│                                                                         │
+│  WITHDRAWAL (Employee chooses destination chain)                        │
+│                                                                         │
+│  Claim ──► Decompress ──► USDC ──► CCTP ──┬──► Ethereum USDC            │
+│            (c-USDC→USDC)         (burn)   ├──► Base USDC                │
+│                                           ├──► Arbitrum USDC            │
+│                                           ├──► Polygon USDC             │
+│                                           └──► Stay on Solana           │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. Layer 1: Light Protocol - Compressed State Storage
+## 2. Layer 0: USDC + Circle CCTP - Cross-Chain Payments
+
+> **Documentation Links:**
+> - [Circle CCTP Documentation](https://developers.circle.com/cctp) - Main CCTP docs
+> - [CCTP Getting Started](https://developers.circle.com/stablecoins/cctp-getting-started) - Integration guide
+> - [Solana CCTP Contracts](https://github.com/circlefin/solana-cctp-contracts) - Official contracts
+> - [USDC on Solana](https://solscan.io/token/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v) - Token explorer
+> - [Circle Developer Console](https://console.circle.com/) - API access
+
+### 2.0.1 Overview
+
+Circle's Cross-Chain Transfer Protocol (CCTP) enables **native USDC transfers** between blockchains without wrapped tokens or liquidity pools. USDC is burned on the source chain and minted on the destination chain.
+
+### 2.0.2 Why USDC for Payroll?
+
+| Benefit | Description |
+|---------|-------------|
+| **Stable Value** | Employees receive predictable salary amounts (1 USDC = $1) |
+| **No Wrapped Tokens** | Native USDC on every chain, not bridged/wrapped versions |
+| **Global Liquidity** | Accepted by all major exchanges, DeFi protocols, and merchants |
+| **Regulatory Clarity** | Circle is a regulated financial institution |
+| **Cross-Chain Freedom** | Employees can receive salary on their preferred chain |
+
+### 2.0.3 CCTP Supported Chains
+
+| Chain | Domain ID | Status |
+|-------|-----------|--------|
+| Ethereum | 0 | Live |
+| Avalanche | 1 | Live |
+| Optimism | 2 | Live |
+| Arbitrum | 3 | Live |
+| Base | 6 | Live |
+| Polygon PoS | 7 | Live |
+| **Solana** | 5 | **Live** |
+| Noble (Cosmos) | 4 | Live |
+| Sui | 8 | Live |
+
+### 2.0.4 USDC Contract Addresses
+
+| Network | Address | Decimals |
+|---------|---------|----------|
+| **Solana Mainnet** | `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` | 6 |
+| **Solana Devnet** | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` | 6 |
+| Ethereum | `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` | 6 |
+| Base | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` | 6 |
+| Arbitrum | `0xaf88d065e77c8cC2239327C5EDb3A432268e5831` | 6 |
+
+### 2.0.5 CCTP Program Addresses (Solana)
+
+| Program | V1 Address | V2 Address |
+|---------|------------|------------|
+| **MessageTransmitter** | `CCTPmbSD7gX1bxKPAmg77w8oFzNFpaQiQUWD43TKaecd` | `CCTPV2Sm4AdWt5296sk4P66VBZ7bEhcARwFaaS9YPbeC` |
+| **TokenMessengerMinter** | `CCTPiPYPc6AsJuwueEnWgSgucamXDZwBd53dQ11YiKX3` | `CCTPV2vPZJS2u2BBsUoscuikbYjnpFmbFsvVuJdgUMQe` |
+
+### 2.0.6 CCTP Integration Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         CCTP TRANSFER FLOW                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  SOURCE CHAIN (e.g., Ethereum)                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ 1. User calls depositForBurn(amount, destinationDomain, recipient)│   │
+│  │ 2. USDC is burned on source chain                                │   │
+│  │ 3. MessageTransmitter emits Message event                        │   │
+│  └─────────────────────────────────────┬───────────────────────────┘   │
+│                                        │                                │
+│  CIRCLE ATTESTATION SERVICE            │                                │
+│  ┌─────────────────────────────────────▼───────────────────────────┐   │
+│  │ 4. Circle's attestation service observes burn                    │   │
+│  │ 5. Generates signed attestation (proof of burn)                  │   │
+│  │ 6. Attestation available via API                                 │   │
+│  └─────────────────────────────────────┬───────────────────────────┘   │
+│                                        │                                │
+│  DESTINATION CHAIN (e.g., Solana)      │                                │
+│  ┌─────────────────────────────────────▼───────────────────────────┐   │
+│  │ 7. Relayer/User calls receiveMessage(message, attestation)       │   │
+│  │ 8. MessageTransmitter verifies attestation                       │   │
+│  │ 9. TokenMessengerMinter mints USDC to recipient                  │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 2.0.7 ShadowVest CCTP Integration
+
+```typescript
+// lib/cctp-bridge.ts
+
+import { Connection, PublicKey, Keypair, Transaction } from "@solana/web3.js";
+
+/**
+ * CCTP Program IDs on Solana (V2)
+ */
+export const CCTP_PROGRAMS = {
+  MESSAGE_TRANSMITTER: new PublicKey("CCTPV2Sm4AdWt5296sk4P66VBZ7bEhcARwFaaS9YPbeC"),
+  TOKEN_MESSENGER_MINTER: new PublicKey("CCTPV2vPZJS2u2BBsUoscuikbYjnpFmbFsvVuJdgUMQe"),
+};
+
+/**
+ * USDC Mint addresses
+ */
+export const USDC_MINT = {
+  MAINNET: new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
+  DEVNET: new PublicKey("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"),
+};
+
+/**
+ * CCTP Domain IDs
+ */
+export const CCTP_DOMAINS = {
+  ETHEREUM: 0,
+  AVALANCHE: 1,
+  OPTIMISM: 2,
+  ARBITRUM: 3,
+  NOBLE: 4,
+  SOLANA: 5,
+  BASE: 6,
+  POLYGON: 7,
+};
+
+/**
+ * Initiate cross-chain USDC transfer from Solana
+ * Burns USDC on Solana, to be minted on destination chain
+ */
+export async function bridgeUsdcFromSolana(
+  connection: Connection,
+  payer: Keypair,
+  amount: bigint,
+  destinationDomain: number,
+  destinationRecipient: Uint8Array // 32-byte address on destination chain
+): Promise<string> {
+  // Implementation would use CCTP SDK
+  // 1. Call depositForBurn on TokenMessengerMinter
+  // 2. Return message hash for tracking
+  throw new Error("Implement using @circlefin/cctp-sdk");
+}
+
+/**
+ * Complete cross-chain USDC transfer to Solana
+ * Mints USDC on Solana after burn on source chain
+ */
+export async function receiveUsdcOnSolana(
+  connection: Connection,
+  payer: Keypair,
+  message: Uint8Array,
+  attestation: Uint8Array
+): Promise<string> {
+  // Implementation would use CCTP SDK
+  // 1. Call receiveMessage on MessageTransmitter
+  // 2. USDC is minted to recipient
+  throw new Error("Implement using @circlefin/cctp-sdk");
+}
+```
+
+### 2.0.8 Employee Withdrawal Options
+
+When an employee claims vested tokens, they can choose their destination:
+
+| Option | Flow | Use Case |
+|--------|------|----------|
+| **Stay on Solana** | Decompress c-USDC → USDC | Use in Solana DeFi, low fees |
+| **Bridge to Ethereum** | USDC → CCTP → ETH USDC | CEX deposits, Ethereum DeFi |
+| **Bridge to Base** | USDC → CCTP → Base USDC | Low-cost L2, Coinbase ecosystem |
+| **Bridge to Arbitrum** | USDC → CCTP → Arb USDC | Arbitrum DeFi ecosystem |
+
+### 2.0.9 Cost Comparison
+
+| Method | Per-Transfer Cost | Cross-Chain? |
+|--------|-------------------|--------------|
+| Traditional wire | $25-50 | Yes (slow) |
+| Regular USDC transfer | ~$0.01 | No |
+| Compressed USDC (Light) | ~$0.000025 | No |
+| CCTP bridge | ~$0.10-0.50 | Yes (native) |
+| **ShadowVest (Compressed + CCTP)** | ~$0.10-0.50 | **Yes** |
+
+### 2.0.10 Integration with Light Protocol
+
+USDC can be compressed for cheap on-chain distribution:
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                 USDC + LIGHT PROTOCOL INTEGRATION                   │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                    │
+│  1. Create Token Pool for USDC (one-time setup)                    │
+│     ┌──────────────────────────────────────────────────────────┐  │
+│     │ await createTokenPool(connection, payer, USDC_MINT);      │  │
+│     │ // No mint authority needed - permissionless              │  │
+│     └──────────────────────────────────────────────────────────┘  │
+│                                                                    │
+│  2. Compress USDC for distribution                                 │
+│     ┌──────────────────────────────────────────────────────────┐  │
+│     │ // Lock USDC in pool, create compressed accounts         │  │
+│     │ await CompressedTokenProgram.compress({                   │  │
+│     │   mint: USDC_MINT,                                        │  │
+│     │   amount: 1_000_000n, // 1 USDC (6 decimals)             │  │
+│     │   toAddress: employeeWallet,                              │  │
+│     │ });                                                       │  │
+│     └──────────────────────────────────────────────────────────┘  │
+│                                                                    │
+│  3. Employee decompresses when ready                               │
+│     ┌──────────────────────────────────────────────────────────┐  │
+│     │ // Release USDC from pool to regular SPL account         │  │
+│     │ await CompressedTokenProgram.decompress({                 │  │
+│     │   mint: USDC_MINT,                                        │  │
+│     │   amount: 1_000_000n,                                     │  │
+│     │   toAddress: employeeAta,                                 │  │
+│     │ });                                                       │  │
+│     └──────────────────────────────────────────────────────────┘  │
+│                                                                    │
+│  4. Optionally bridge to another chain via CCTP                    │
+│     ┌──────────────────────────────────────────────────────────┐  │
+│     │ await bridgeUsdcFromSolana(                               │  │
+│     │   connection, employee,                                   │  │
+│     │   1_000_000n,                                             │  │
+│     │   CCTP_DOMAINS.ETHEREUM,                                  │  │
+│     │   ethereumRecipientAddress                                │  │
+│     │ );                                                        │  │
+│     └──────────────────────────────────────────────────────────┘  │
+│                                                                    │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 3. Layer 1: Light Protocol - ZK Compression
 
 > **Documentation Links:**
 > - [Light Protocol Docs](https://www.zkcompression.com) - Main documentation
 > - [Compressed Account Model](https://www.zkcompression.com/learn/core-concepts/compressed-account-model) - How compression works
+> - [Compressed Tokens Overview](https://www.zkcompression.com/compressed-tokens/overview) - Token compression
+> - [Airdrop/Distribution Guide](https://www.zkcompression.com/compressed-tokens/advanced-guides/airdrop) - Batch distribution
 > - [Create Compressed Accounts](https://www.zkcompression.com/compressed-pdas/guides/how-to-create-compressed-accounts) - Implementation guide
 > - [Merkle Trees & Validity Proofs](https://www.zkcompression.com/learn/core-concepts/merkle-trees-validity-proofs) - Core concepts
 > - [Light SDK Client Guide](https://www.zkcompression.com/client-library/client-guide) - Client integration
 > - [GitHub: light-protocol](https://github.com/Lightprotocol/light-protocol) - Source code
+> - [GitHub: example-token-distribution](https://github.com/Lightprotocol/example-token-distribution) - Distribution examples
 
-### 2.1 Purpose
+### 2.1 Overview: Two Light Protocol Features
 
-Store vesting positions as compressed accounts to achieve:
+Light Protocol provides **two distinct features** for ShadowVest:
+
+| Feature | Use Case | Cost Savings | Implementation |
+|---------|----------|--------------|----------------|
+| **Compressed PDAs** | Store vesting position state | 5000x cheaper state storage | On-chain CPI |
+| **Compressed Tokens** | Distribute payroll tokens | 400x cheaper token accounts | Client-side SDK |
+
+**Why both?**
+- **Compressed PDAs** = Store encrypted vesting data (position details, amounts, schedules)
+- **Compressed Tokens** = Distribute actual salary payments to recipients (rent-free)
+
+### 2.2 Approach A: Compressed Vesting Positions (State Storage)
+
+**Purpose**: Store vesting positions as compressed accounts to achieve:
 - **5000x cost reduction** vs regular Solana accounts
 - **Merkle tree commitments** instead of full on-chain data
 - **Scalability** to millions of vesting positions
 
-### 2.2 Compressed Account Schema
+#### Compressed Account Schema
 
 ```rust
 /// Compressed Vesting Position (stored in Merkle tree)
@@ -113,7 +402,7 @@ pub struct CompressedVestingPosition {
 }
 ```
 
-### 2.3 Light Protocol Integration
+#### Light Protocol Integration (On-Chain CPI)
 
 ```rust
 // programs/shadowvest/src/light_integration.rs
@@ -157,7 +446,7 @@ pub fn create_compressed_vesting(
 }
 ```
 
-### 2.4 State Tree Structure
+#### State Tree Structure
 
 ```
 Merkle Tree (State Root)
@@ -168,6 +457,239 @@ Merkle Tree (State Root)
  │   │     │   │
 Pos1 Pos2  Pos3 Pos4  (Compressed Vesting Positions)
 ```
+
+### 2.3 Approach B: Compressed Token Distribution (Payroll)
+
+**Purpose**: Distribute salary payments as compressed tokens to achieve:
+- **400x cost reduction** vs regular SPL token accounts (~2M lamports → ~5K lamports)
+- **Rent-free token accounts** - recipients don't pay rent
+- **Batch distribution** - pay 10,000+ employees in optimized transactions
+- **Seamless interoperability** - recipients can decompress to regular SPL tokens
+
+#### Why Compressed Tokens for Payroll?
+
+| Traditional SPL Distribution | Compressed Token Distribution |
+|------------------------------|-------------------------------|
+| ~2,000,000 lamports per recipient account | ~5,000 lamports per recipient |
+| Rent required (locked capital) | Rent-free (no locked capital) |
+| One transaction per recipient | Batch multiple recipients per tx |
+| High gas for large payrolls | Optimized compute per batch |
+
+**Example**: Paying 1,000 employees monthly
+- **Traditional**: 2,000,000 × 1,000 = 2 SOL in rent deposits
+- **Compressed**: 5,000 × 1,000 = 0.005 SOL total cost (400x cheaper)
+
+#### Architecture: Compressed Payroll Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                COMPRESSED PAYROLL DISTRIBUTION                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. Employer deposits SPL tokens to Token Pool                  │
+│     ┌────────────┐     deposit      ┌─────────────┐            │
+│     │  Employer  │─────────────────►│ Token Pool  │            │
+│     │  Wallet    │                  │ (SPL Lock)  │            │
+│     └────────────┘                  └──────┬──────┘            │
+│                                            │                    │
+│  2. Compress & distribute to recipients    │                    │
+│                                            ▼                    │
+│     ┌──────────────────────────────────────────────────────┐   │
+│     │            Compression Instructions                   │   │
+│     │  CompressedTokenProgram.compress(recipients[])       │   │
+│     │  - Batched: 5 recipients per instruction             │   │
+│     │  - Optimized: 500K compute units per batch           │   │
+│     └──────────────────────────┬───────────────────────────┘   │
+│                                │                                │
+│  3. Recipients receive compressed tokens                        │
+│                                ▼                                │
+│     ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐           │
+│     │ Emp 1  │  │ Emp 2  │  │ Emp 3  │  │ Emp N  │           │
+│     │(c-tok) │  │(c-tok) │  │(c-tok) │  │(c-tok) │           │
+│     └───┬────┘  └───┬────┘  └───┬────┘  └───┬────┘           │
+│         │           │           │           │                  │
+│  4. Recipients can decompress anytime                          │
+│         ▼           ▼           ▼           ▼                  │
+│     ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐           │
+│     │Regular │  │Regular │  │Regular │  │Regular │           │
+│     │SPL Tok │  │SPL Tok │  │SPL Tok │  │SPL Tok │           │
+│     └────────┘  └────────┘  └────────┘  └────────┘           │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Implementation: Client-Side Distribution
+
+```typescript
+// lib/compressed-payroll.ts
+
+import { createRpc } from "@lightprotocol/stateless.js";
+import { CompressedTokenProgram } from "@lightprotocol/compressed-token";
+import { Connection, PublicKey, Keypair } from "@solana/web3.js";
+
+/**
+ * Payroll distribution configuration
+ */
+interface PayrollConfig {
+  mint: PublicKey;              // Token mint address
+  recipients: PayrollRecipient[];
+  batchSize?: number;           // Recipients per instruction (default: 5)
+  computeUnitsPerRecipient?: number; // ~120,000 CU per recipient
+}
+
+interface PayrollRecipient {
+  address: PublicKey;
+  amount: bigint;  // Token amount in base units
+}
+
+/**
+ * Distribute payroll using compressed tokens
+ */
+export async function distributePayroll(
+  connection: Connection,
+  payer: Keypair,
+  config: PayrollConfig
+): Promise<{ successful: number; failed: number; signatures: string[] }> {
+  const { mint, recipients, batchSize = 5 } = config;
+
+  // 1. Get Light Protocol infrastructure
+  const rpc = createRpc(connection.rpcEndpoint);
+  const stateTreeInfos = await rpc.getStateTreeInfos();
+  const tokenPoolInfos = await getTokenPoolInfos(rpc, mint);
+
+  // 2. Create batched compression instructions
+  const batches = chunkArray(recipients, batchSize);
+  const results = { successful: 0, failed: 0, signatures: [] as string[] };
+
+  for (const batch of batches) {
+    try {
+      // Build compression instruction for batch
+      const ix = await CompressedTokenProgram.compress({
+        payer: payer.publicKey,
+        mint,
+        recipients: batch.map(r => ({
+          address: r.address,
+          amount: r.amount,
+        })),
+        stateTree: selectStateTreeInfo(stateTreeInfos),
+        tokenPool: selectTokenPoolInfo(tokenPoolInfos),
+      });
+
+      // Add compute budget (120K per recipient)
+      const computeIx = ComputeBudgetProgram.setComputeUnitLimit({
+        units: batch.length * 120_000,
+      });
+
+      // Send transaction
+      const tx = new Transaction().add(computeIx, ix);
+      const sig = await sendAndConfirmTransaction(connection, tx, [payer]);
+
+      results.successful += batch.length;
+      results.signatures.push(sig);
+    } catch (error) {
+      console.error(`Batch failed:`, error);
+      results.failed += batch.length;
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Employee decompresses tokens to regular SPL
+ */
+export async function decompressTokens(
+  connection: Connection,
+  owner: Keypair,
+  mint: PublicKey,
+  amount: bigint
+): Promise<string> {
+  const rpc = createRpc(connection.rpcEndpoint);
+
+  // Get validity proof for decompression
+  const compressedAccounts = await rpc.getCompressedTokenAccountsByOwner(
+    owner.publicKey,
+    { mint }
+  );
+
+  const ix = await CompressedTokenProgram.decompress({
+    payer: owner.publicKey,
+    owner: owner.publicKey,
+    mint,
+    amount,
+    compressedAccounts,
+  });
+
+  const tx = new Transaction().add(ix);
+  return await sendAndConfirmTransaction(connection, tx, [owner]);
+}
+
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  return Array.from({ length: Math.ceil(arr.length / size) }, (_, i) =>
+    arr.slice(i * size, i * size + size)
+  );
+}
+```
+
+#### Integration with ShadowVest Vesting
+
+The compressed token distribution integrates with the existing vesting system:
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│              VESTING + COMPRESSED DISTRIBUTION                  │
+├────────────────────────────────────────────────────────────────┤
+│                                                                │
+│  VESTING LAYER (Arcium MPC + Light PDAs)                       │
+│  ┌──────────────────────────────────────────────────────────┐ │
+│  │ VestingPosition {                                         │ │
+│  │   encrypted_total_amount,     // Arcium encrypted        │ │
+│  │   encrypted_claimed_amount,   // Arcium encrypted        │ │
+│  │   vesting_schedule,           // Public params           │ │
+│  │ }                                                         │ │
+│  │ → Stored as Compressed PDA (5000x cheaper)                │ │
+│  └──────────────────────────────────────────────────────────┘ │
+│                         │                                      │
+│                         │ claim_vested_tokens()                │
+│                         ▼                                      │
+│  DISTRIBUTION LAYER (Compressed Tokens)                        │
+│  ┌──────────────────────────────────────────────────────────┐ │
+│  │ 1. Arcium MPC calculates claimable amount                 │ │
+│  │ 2. ZK proof verifies claim eligibility                    │ │
+│  │ 3. Tokens distributed as compressed tokens (400x cheaper) │ │
+│  │ 4. Recipient can decompress to regular SPL anytime        │ │
+│  └──────────────────────────────────────────────────────────┘ │
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
+```
+
+#### Dependencies for Token Distribution
+
+```json
+// package.json
+{
+  "dependencies": {
+    "@lightprotocol/stateless.js": ">=0.21.0",
+    "@lightprotocol/compressed-token": ">=0.21.0",
+    "@solana/web3.js": "^1.95.0",
+    "@solana/spl-token": "^0.4.0"
+  }
+}
+```
+
+### 2.4 Decision: When to Use Each Approach
+
+| Scenario | Use Compressed PDAs | Use Compressed Tokens |
+|----------|--------------------|-----------------------|
+| Store vesting position details | ✅ Yes | ❌ No |
+| Distribute salary payments | ❌ No | ✅ Yes |
+| Track encrypted amounts | ✅ Yes (with Arcium) | ❌ No |
+| Batch pay 1000+ employees | ❌ No | ✅ Yes |
+| Recipient needs SPL tokens | ❌ No | ✅ Yes (can decompress) |
+
+**Recommended Architecture**:
+1. **Phase 2a**: Use Compressed PDAs for vesting position state storage
+2. **Phase 2b**: Use Compressed Tokens for actual payroll distribution
 
 ---
 
@@ -1305,24 +1827,80 @@ pub struct NullifierRegistry {
 - `encrypted-ixs/src/vesting.rs` - MPC computations
 - Basic test suite
 
-### Phase 2: Light Protocol Integration (Week 3)
+### Phase 2a: Light Protocol - Compressed Vesting Positions (Week 3)
 
-**Goal**: Compressed vesting positions
+**Goal**: Store vesting positions as compressed PDAs for 5000x cost reduction
 
 | Task | Priority | Dependencies | Docs |
 |------|----------|--------------|------|
-| Set up Light Protocol SDK | HIGH | Phase 1 | [Installation](https://www.zkcompression.com/introduction/installation) |
+| Set up Light Protocol SDK (Rust) | HIGH | Phase 1 | [Installation](https://www.zkcompression.com/introduction/installation) |
 | Implement compressed position creation | HIGH | Light SDK | [Create Compressed Accounts](https://www.zkcompression.com/compressed-pdas/guides/how-to-create-compressed-accounts) |
 | Implement Merkle proof verification | HIGH | Compressed positions | [Merkle Trees](https://www.zkcompression.com/learn/core-concepts/merkle-trees-validity-proofs) |
-| State migration strategy | MEDIUM | All above | [Account Model](https://www.zkcompression.com/learn/core-concepts/compressed-account-model) |
+| CPI to Light System Program | HIGH | All above | [Program Examples](https://www.zkcompression.com/compressed-pdas/program-examples) |
 | Integration tests | HIGH | All above | [Client Guide](https://www.zkcompression.com/client-library/client-guide) |
 
 **Deliverables**:
-- Light Protocol integration
-- Compressed vesting positions
-- Cost benchmarks
+- `state/compressed_position.rs` - Compressed position schema (DONE)
+- Light Protocol CPI integration
+- Compressed vesting position CRUD operations
+- Cost benchmarks vs regular accounts
 
-### Phase 3: Noir ZK Circuits (Week 4)
+**Current Status**: Schema implemented, CPI integration pending due to light-sdk v0.18.0 API alignment
+
+### Phase 2b: Light Protocol - Compressed Token Distribution (Week 3-4)
+
+**Goal**: Distribute payroll using compressed tokens for 400x cost reduction
+
+| Task | Priority | Dependencies | Docs |
+|------|----------|--------------|------|
+| Set up Light Protocol SDK (TypeScript) | HIGH | Phase 1 | [@lightprotocol/stateless.js](https://www.npmjs.com/package/@lightprotocol/stateless.js) |
+| Implement batch payroll distribution | HIGH | Light SDK | [Airdrop Guide](https://www.zkcompression.com/compressed-tokens/advanced-guides/airdrop) |
+| Implement token decompression | HIGH | Distribution | [Compressed Tokens](https://www.zkcompression.com/compressed-tokens/overview) |
+| Retry logic & error handling | MEDIUM | Distribution | [Example Token Distribution](https://github.com/Lightprotocol/example-token-distribution) |
+| Integration with vesting claims | HIGH | Phase 2a | - |
+
+**Deliverables**:
+- `lib/compressed-payroll.ts` - Batch distribution client
+- `lib/token-decompress.ts` - Decompression helper
+- Integration tests for 100+ recipient batches
+- Cost comparison documentation
+
+**Key Implementation Notes**:
+- Use `@lightprotocol/compressed-token` for client-side distribution
+- Batch 5 recipients per instruction (configurable)
+- ~120,000 compute units per recipient
+- Recipients can decompress to regular SPL tokens anytime
+
+**Current Status**: ✅ COMPLETE
+- `lib/compressed-payroll.ts` - Created with distributePayroll(), decompressTokens(), getCompressedBalance()
+- `tests/compressed-payroll.ts` - Unit tests passing (6/6)
+- Integration tests ready (require Helius RPC + token pool setup)
+
+### Phase 2c: USDC + CCTP Cross-Chain Integration (Week 4)
+
+**Goal**: Enable cross-chain USDC payments via Circle's CCTP
+
+| Task | Priority | Dependencies | Docs |
+|------|----------|--------------|------|
+| Research CCTP integration | HIGH | Phase 2b | [CCTP Docs](https://developers.circle.com/cctp) |
+| Create USDC token pool on Light Protocol | HIGH | Phase 2b | [Token Pools](https://www.zkcompression.com/compressed-tokens/overview) |
+| Implement CCTP bridge functions | HIGH | Token pool | [Solana CCTP](https://github.com/circlefin/solana-cctp-contracts) |
+| Add cross-chain withdrawal UI | MEDIUM | CCTP functions | [Circle API](https://developers.circle.com/stablecoins/cctp-getting-started) |
+| Test cross-chain flows (Solana ↔ Base) | HIGH | All above | - |
+
+**Deliverables**:
+- `lib/cctp-bridge.ts` - Cross-chain USDC bridge functions
+- `lib/usdc-constants.ts` - USDC addresses and CCTP program IDs
+- Integration tests for cross-chain transfers
+- Documentation for employee withdrawal options
+
+**Key Implementation Notes**:
+- Use devnet USDC: `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`
+- Use mainnet USDC: `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`
+- CCTP V2 programs are recommended for new integrations
+- Attestation fetching from Circle API typically takes 10-20 minutes
+
+### Phase 3: Noir ZK Circuits (Week 5)
 
 **Goal**: Zero-knowledge proof verification
 
@@ -1420,10 +1998,15 @@ kage/
 │   │           │   ├── schedule.rs
 │   │           │   ├── position.rs
 │   │           │   └── stealth_meta.rs   # Stealth meta-address
-│   │           ├── light_integration.rs  # Light Protocol
+│   │           ├── light_integration.rs  # Light Protocol PDAs (5000x savings)
 │   │           ├── radr_integration.rs   # Radr Labs ShadowPay
 │   │           ├── stealth_registry.rs   # ECDH Stealth addresses
 │   │           └── errors.rs
+│   │
+│   ├── lib/                              # Client-side TypeScript libraries
+│   │   ├── compressed-payroll.ts         # Batch token distribution (400x savings)
+│   │   ├── token-decompress.ts           # Decompress to regular SPL
+│   │   └── stealth-address.ts            # ECDH stealth implementation
 │   │
 │   ├── encrypted-ixs/
 │   │   └── src/
@@ -1528,11 +2111,29 @@ kage/
 
 ## 11. Sources & References
 
+### USDC & Circle CCTP (Cross-Chain)
+- [Circle CCTP Documentation](https://developers.circle.com/cctp) - Main CCTP docs
+- [CCTP Getting Started Guide](https://developers.circle.com/stablecoins/cctp-getting-started) - Integration quickstart
+- [Solana CCTP Contracts](https://github.com/circlefin/solana-cctp-contracts) - Official Solana contracts
+- [Circle Developer Console](https://console.circle.com/) - API access and keys
+- [USDC on Solana (Solscan)](https://solscan.io/token/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v) - Token explorer
+- [Circle Blog: CCTP on Solana](https://www.circle.com/blog/new-pre-mint-address-for-usdc-on-solana) - Launch announcement
+- **Key Addresses**:
+  - Solana USDC Mainnet: `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`
+  - Solana USDC Devnet: `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`
+  - CCTP MessageTransmitter V2: `CCTPV2Sm4AdWt5296sk4P66VBZ7bEhcARwFaaS9YPbeC`
+  - CCTP TokenMessengerMinter V2: `CCTPV2vPZJS2u2BBsUoscuikbYjnpFmbFsvVuJdgUMQe`
+
 ### Light Protocol (ZK Compression)
 - [Light Protocol Documentation](https://www.zkcompression.com)
 - [Light Protocol GitHub](https://github.com/Lightprotocol/light-protocol)
 - [Compressed Accounts Guide](https://www.zkcompression.com/compressed-pdas/guides/how-to-create-compressed-accounts)
 - [Merkle Trees & Validity Proofs](https://www.zkcompression.com/learn/core-concepts/merkle-trees-validity-proofs)
+- [Compressed Tokens Overview](https://www.zkcompression.com/compressed-tokens/overview) - 400x cheaper token accounts
+- [Airdrop/Distribution Guide](https://www.zkcompression.com/compressed-tokens/advanced-guides/airdrop) - Batch distribution
+- [Example Token Distribution](https://github.com/Lightprotocol/example-token-distribution) - Reference implementation
+- [@lightprotocol/stateless.js](https://www.npmjs.com/package/@lightprotocol/stateless.js) - Client SDK
+- [@lightprotocol/compressed-token](https://www.npmjs.com/package/@lightprotocol/compressed-token) - Token SDK
 
 ### Arcium MPC
 - [Arcium Documentation](https://docs.arcium.com)

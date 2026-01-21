@@ -9,6 +9,14 @@ pub mod state;
 use errors::ShadowVestError;
 use state::{Organization, VestingPosition, VestingSchedule};
 
+// Phase 2b: Light Protocol imports for compressed positions (5000x cost reduction)
+// The CompressedVestingPosition schema is ready in state/compressed_position.rs
+// Full CPI integration requires careful alignment with light-sdk v0.18.0 API:
+// - light_sdk::cpi::v1::{CpiAccounts, LightSystemProgramCpi}
+// - light_sdk::account::LightAccount
+// - light_sdk::instruction::{ValidityProof, PackedAddressTreeInfo}
+// - light_sdk::cpi::InvokeLightSystemProgram trait
+
 // Computation definition offsets for Arcium circuits
 const COMP_DEF_OFFSET_INIT_POSITION: u32 = comp_def_offset("init_position");
 const COMP_DEF_OFFSET_CALCULATE_VESTED: u32 = comp_def_offset("calculate_vested");
@@ -338,6 +346,25 @@ pub mod contract {
 
         Ok(())
     }
+
+    // ============================================================
+    // Compressed Vesting Positions (Light Protocol - 5000x cost reduction)
+    // ============================================================
+    //
+    // Phase 2b: Light Protocol integration for compressed accounts
+    // Schema is ready in state/compressed_position.rs
+    //
+    // Instructions to implement:
+    // - create_compressed_vesting_position
+    // - update_compressed_vesting_position
+    //
+    // Required light-sdk v0.18.0 components:
+    // - CpiAccounts::new(signer, remaining_accounts, LIGHT_CPI_SIGNER)
+    // - derive_address(seeds, tree_pubkey, program_id)
+    // - LightAccount::<T>::new_init(owner, address, output_tree_index)
+    // - LightSystemProgramCpi::new_cpi(signer, proof)
+    //     .with_light_account(account)
+    //     .invoke(cpi_accounts)
 }
 
 // ============================================================
@@ -597,6 +624,12 @@ pub struct CreateVestingSchedule<'info> {
 }
 
 // ============================================================
+// Account Contexts - Compressed Vesting Positions (Light Protocol)
+// ============================================================
+// Phase 2b: Account contexts for compressed positions will be added here
+// See state/compressed_position.rs for the data schema
+
+// ============================================================
 // Events
 // ============================================================
 
@@ -650,6 +683,11 @@ pub struct VestedAmountCalculated {
     pub nonce: [u8; 16],
 }
 
+// Phase 2b: Events for compressed positions
+// #[event]
+// pub struct CompressedPositionCreated { ... }
+// #[event]
+// pub struct CompressedPositionUpdated { ... }
 
 // ============================================================
 // Error Codes
