@@ -11,7 +11,6 @@
 | **Light Protocol** | [zkcompression.com](https://www.zkcompression.com) | [GitHub](https://github.com/Lightprotocol/light-protocol) | [Client Guide](https://www.zkcompression.com/client-library/client-guide) |
 | **Arcium MPC** | [docs.arcium.com](https://docs.arcium.com) | [Examples](https://github.com/arcium-hq/examples) | [Arcis Framework](https://docs.arcium.com/developers/arcis) |
 | **Noir ZK** | [noir-lang.org/docs](https://noir-lang.org/docs/) | [GitHub](https://github.com/noir-lang/noir) | [NoirJS](https://noir-lang.org/docs/tutorials/noirjs_app) |
-| **Radr ShadowPay** | [radrlabs.io/docs](https://www.radrlabs.io/docs) | [SDK](https://github.com/Radrdotfun/shadowpay-sdk) | [API](https://registry.scalar.com/@radr/apis/shadowpay-api) |
 | **Stealth Addresses** | [EIP-5564](https://eips.ethereum.org/EIPS/eip-5564) | [Zera SDK](https://github.com/jskoiz/zeraprivacy) | [@noble/curves](https://github.com/paulmillr/noble-curves) |
 | **Circle CCTP** | [developers.circle.com/cctp](https://developers.circle.com/cctp) | [Solana Contracts](https://github.com/circlefin/solana-cctp-contracts) | [CCTP Guide](https://developers.circle.com/stablecoins/cctp-getting-started) |
 | **USDC** | [circle.com/usdc](https://www.circle.com/usdc) | [Token Program](https://spl.solana.com/token) | [Solana: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v](https://solscan.io/token/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v) |
@@ -22,16 +21,15 @@
 
 ## Executive Summary
 
-ShadowVest is a privacy-preserving payroll and vesting protocol that combines six complementary technologies:
+ShadowVest is a privacy-preserving payroll and vesting protocol that combines five complementary technologies:
 
 | Layer | Technology | Purpose | Docs |
 |-------|------------|---------|------|
 | **L0** | USDC + Circle CCTP | Cross-chain payments (native USDC, no wrapped tokens) | [CCTP Docs](https://developers.circle.com/cctp) |
 | **L1** | Light Protocol | Compressed state & tokens (400-5000x cost reduction) | [Docs](https://www.zkcompression.com) |
-| **L2** | Arcium MPC | Confidential computation (encrypted calculations) | [Docs](https://docs.arcium.com) |
-| **L3** | Noir ZK Circuits | Zero-knowledge proof verification | [Docs](https://noir-lang.org/docs/) |
-| **L4** | Radr Labs ShadowPay | Shielded settlement (amount privacy + relayers) | [Docs](https://www.radrlabs.io/docs) |
-| **L5** | ECDH Stealth Addresses | One-time receiver addresses (receiver privacy) | [EIP-5564](https://eips.ethereum.org/EIPS/eip-5564) |
+| **L2** | Arcium MPC | Confidential computation (encrypted vesting amounts) | [Docs](https://docs.arcium.com) |
+| **L3** | Noir ZK Circuits | Zero-knowledge proof verification (claim eligibility) | [Docs](https://noir-lang.org/docs/) |
+| **L4** | ECDH Stealth Addresses | One-time receiver addresses (receiver privacy) | [EIP-5564](https://eips.ethereum.org/EIPS/eip-5564) |
 
 ### Why USDC?
 
@@ -69,11 +67,11 @@ ShadowVest uses **USDC** as the primary payment token because:
 │  │         (Cross-chain: ETH, Base, Arb, Sol...)       │  │
 │  └─────────────────────────┬───────────────────────────┘  │
 │                            ▼                               │
-│  ┌─────────┐  ┌─────────┐  ┌─────┐  ┌──────┐  ┌───────┐  │
-│  │ Light   │  │ Arcium  │  │Noir │  │ Radr │  │Stealth│  │
-│  │Protocol │◄─┤  MPC    │◄─┤ ZK  │◄─┤ Labs │◄─┤Address│  │
-│  │(compress)│ │(compute)│  │(proof)│ │(settle)│ │(recv) │  │
-│  └─────────┘  └─────────┘  └─────┘  └──────┘  └───────┘  │
+│  ┌──────────┐  ┌──────────┐  ┌──────┐  ┌─────────────┐   │
+│  │  Light   │  │  Arcium  │  │ Noir │  │   Stealth   │   │
+│  │ Protocol │◄─┤   MPC    │◄─┤  ZK  │◄─┤  Addresses  │   │
+│  │(compress)│  │(compute) │  │(proof)│  │  (privacy)  │   │
+│  └──────────┘  └──────────┘  └──────┘  └─────────────┘   │
 └───────────────────────────────────────────────────────────┘
 ```
 
@@ -1100,239 +1098,7 @@ pub struct WithdrawalPublicInputs {
 
 ---
 
-## 5. Layer 4: Radr Labs ShadowPay - Shielded Settlement
-
-> **Documentation Links:**
-> - [Radr Labs Website](https://www.radrlabs.io/) - Main website
-> - [ShadowPay API Reference](https://registry.scalar.com/@radr/apis/shadowpay-api) - Full API documentation
-> - [ShadowID Documentation](https://www.radrlabs.io/docs/shadowid) - ZK identity layer
-> - [@shadowpay/server NPM](https://www.npmjs.com/package/@shadowpay/server) - Server SDK
-> - [ShadowPay App](https://www.radr.fun/) - Live application
-> - [GitHub: Radrdotfun/shadowpay-sdk](https://github.com/Radrdotfun/shadowpay-sdk) - SDK source
-
-### 5.1 Purpose
-
-Enable private token withdrawals using Radr's ShadowPay infrastructure:
-- **Amount privacy** - Payment amounts encrypted with ElGamal on BN254 curve
-- **ZK verification** - Groth16 proofs verify transactions without revealing details
-- **Relayer infrastructure** - Built-in relayers for transaction submission
-- **MEV protection** - Private mempools prevent front-running
-
-### 5.2 ShadowPay Technology Stack
-
-| Component | Technology | Purpose |
-|-----------|------------|---------|
-| Encryption | ElGamal (BN254) | Encrypts payment amounts |
-| Proofs | Groth16 ZK-SNARKs | Verifies transaction validity |
-| Nullifiers | Bitmap-based | Prevents double-spending |
-| Relayers | ShadowPay Network | Submits transactions privately |
-
-### 5.3 What ShadowPay Provides vs Doesn't Provide
-
-| Feature | Provided | Notes |
-|---------|----------|-------|
-| Amount Privacy | ✅ Yes | ElGamal encryption hides amounts |
-| Sender Anonymity | ✅ Yes | Via relayer infrastructure |
-| Stealth Addresses | ❌ No | Does not generate one-time addresses |
-| Receiver Privacy | ⚠️ Partial | Requires stealth addresses (Layer 5) |
-
-### 5.4 ShadowPay API Reference
-
-**Base URL**: `https://api.shadowpay.io` (from registry.scalar.com/@radr/apis/shadowpay-api)
-
-```typescript
-// Server-side SDK installation
-npm install @shadowpay/server
-
-// Basic integration
-import { ShadowPay } from '@shadowpay/server';
-
-const shadowpay = new ShadowPay({
-  apiKey: 'YOUR_API_KEY',
-  apiUrl: 'https://api.shadowpay.io' // optional
-});
-
-// Express middleware for payment verification
-app.get('/api/premium',
-  shadowpay.requirePayment({ amount: 0.001, token: 'SOL' }),
-  (req, res) => {
-    res.json({ secret: 'Premium content!' });
-  }
-);
-
-// Manual payment verification
-const result = await shadowpay.verifyPayment({
-  accessToken: 'token_from_client',
-  amount: 0.001,
-  token: 'SOL'
-});
-
-if (result.valid) {
-  // Grant access
-}
-
-// Webhook handler for payment events
-app.post('/webhooks/shadowpay',
-  shadowpay.webhookHandler({
-    'payment.success': async (event) => {
-      console.log('Payment successful:', event.data);
-    },
-    'payment.failed': async (event) => {
-      console.log('Payment failed:', event.data);
-    },
-    'payment.refunded': async (event) => {
-      console.log('Payment refunded:', event.data);
-    }
-  })
-);
-```
-
-### 5.5 Integration Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    WITHDRAWAL FLOW                              │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  1. Prove withdrawal eligibility (Noir ZK proof)                │
-│     ┌────────────┐                                              │
-│     │  Employee  │──generates──►[ZK Proof]                      │
-│     └────────────┘                                              │
-│                                                                 │
-│  2. Submit to ShadowVest with proof                             │
-│     [Proof]──►┌────────────────┐                                │
-│               │ ShadowVest     │──verifies──►[Valid]            │
-│               │ Program        │                                │
-│               └───────┬────────┘                                │
-│                       │                                         │
-│  3. Release tokens to Radr Shielded Pool                        │
-│                       ▼                                         │
-│               ┌────────────────┐                                │
-│               │ Radr Shielded  │◄──ElGamal encrypt amount       │
-│               │ Pool           │                                │
-│               └───────┬────────┘                                │
-│                       │                                         │
-│  4. Employee withdraws via ShadowPay                            │
-│                       ▼                                         │
-│               ┌────────────────┐                                │
-│               │ ShadowPay      │──Groth16 proof──►[Relayer]     │
-│               │ Verification   │                                │
-│               └───────┬────────┘                                │
-│                       │                                         │
-│  5. Private settlement to stealth address (Layer 5)             │
-│                       ▼                                         │
-│               ┌────────────────┐                                │
-│               │ Stealth Addr   │──private transfer──►[Wallet]   │
-│               │ (ECDH derived) │                                │
-│               └────────────────┘                                │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 5.6 Radr Integration Code
-
-```rust
-// programs/shadowvest/src/radr_integration.rs
-
-use anchor_lang::prelude::*;
-use radr_sdk::{ShieldedPool, DepositNote, WithdrawParams};
-
-/// Deposit vested tokens into Radr shielded pool
-pub fn shield_withdrawal(
-    ctx: Context<ShieldWithdrawal>,
-    amount: u64,
-    deposit_note_commitment: [u8; 32],
-) -> Result<()> {
-    // Transfer tokens from vesting vault to shielded pool
-    let transfer_ctx = CpiContext::new_with_signer(
-        ctx.accounts.token_program.to_account_info(),
-        Transfer {
-            from: ctx.accounts.vesting_vault.to_account_info(),
-            to: ctx.accounts.shielded_pool_vault.to_account_info(),
-            authority: ctx.accounts.vault_authority.to_account_info(),
-        },
-        &[&[b"vault_authority", &[ctx.bumps.vault_authority]]],
-    );
-    token::transfer(transfer_ctx, amount)?;
-
-    // Register deposit note with Radr
-    radr_sdk::cpi::register_deposit(
-        ctx.accounts.into_radr_context(),
-        DepositNote {
-            commitment: deposit_note_commitment,
-            amount, // This gets encrypted by Radr
-            asset: ctx.accounts.token_mint.key(),
-        },
-    )?;
-
-    emit!(ShieldedWithdrawal {
-        nullifier: ctx.accounts.nullifier.key(),
-        commitment: deposit_note_commitment,
-        timestamp: Clock::get()?.unix_timestamp,
-    });
-
-    Ok(())
-}
-
-#[derive(Accounts)]
-pub struct ShieldWithdrawal<'info> {
-    #[account(mut)]
-    pub withdrawer: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [b"vesting_vault", token_mint.key().as_ref()],
-        bump,
-    )]
-    pub vesting_vault: Account<'info, TokenAccount>,
-
-    #[account(
-        seeds = [b"vault_authority"],
-        bump,
-    )]
-    /// CHECK: PDA authority
-    pub vault_authority: AccountInfo<'info>,
-
-    /// Radr shielded pool vault
-    #[account(mut)]
-    pub shielded_pool_vault: Account<'info, TokenAccount>,
-
-    /// Radr shielded pool state
-    #[account(mut)]
-    pub shielded_pool: Account<'info, ShieldedPool>,
-
-    /// Nullifier to prevent double-withdrawal
-    #[account(
-        init,
-        payer = withdrawer,
-        space = 8 + 32,
-        seeds = [b"nullifier", nullifier_hash.as_ref()],
-        bump,
-    )]
-    pub nullifier: Account<'info, NullifierAccount>,
-
-    pub token_mint: Account<'info, Mint>,
-    pub token_program: Program<'info, Token>,
-    pub radr_program: Program<'info, Radr>,
-    pub system_program: Program<'info, System>,
-}
-
-#[account]
-pub struct NullifierAccount {
-    pub hash: [u8; 32],
-}
-
-#[event]
-pub struct ShieldedWithdrawal {
-    pub nullifier: Pubkey,
-    pub commitment: [u8; 32],
-    pub timestamp: i64,
-}
-```
-
----
-
-## 6. Layer 5: ECDH Stealth Addresses - Receiver Privacy
+## 5. Layer 4: ECDH Stealth Addresses - Receiver Privacy
 
 > **Documentation Links:**
 > - [EIP-5564: Stealth Addresses](https://eips.ethereum.org/EIPS/eip-5564) - Ethereum stealth address standard
@@ -1344,14 +1110,14 @@ pub struct ShieldedWithdrawal {
 > - [ECDH Explained](https://cryptobook.nakov.com/asymmetric-key-ciphers/ecdh-key-exchange) - Key exchange theory
 > - [Umbra Protocol](https://app.umbra.cash/) - Ethereum stealth payments reference
 
-### 6.1 Purpose
+### 5.1 Purpose
 
 Generate one-time addresses for every payment to break on-chain linkability:
 - **Receiver Privacy** - Each payment goes to a unique, unlinkable address
 - **No Address Reuse** - Prevents transaction graph analysis
 - **Self-Custody** - Only recipient can derive private key to spend
 
-### 6.2 Why Stealth Addresses Are Needed
+### 5.2 Why Stealth Addresses Are Needed
 
 Radr Labs ShadowPay hides **amounts** but not **receiver addresses**. Without stealth addresses:
 
@@ -1371,7 +1137,7 @@ Radr Labs ShadowPay hides **amounts** but not **receiver addresses**. Without st
    Analysis: Three unrelated addresses, no pattern visible
 ```
 
-### 6.3 Stealth Address Cryptography
+### 5.3 Stealth Address Cryptography
 
 Based on **Elliptic Curve Diffie-Hellman (ECDH)** key agreement:
 
@@ -1408,7 +1174,7 @@ Based on **Elliptic Curve Diffie-Hellman (ECDH)** key agreement:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 6.4 Stealth Address Implementation
+### 5.4 Stealth Address Implementation
 
 ```typescript
 // lib/stealth-address.ts
@@ -1553,7 +1319,7 @@ function numberToBytesLE(num: bigint, length: number): Uint8Array {
 }
 ```
 
-### 6.5 On-Chain Stealth Registry
+### 5.5 On-Chain Stealth Registry
 
 ```rust
 // programs/shadowvest/src/stealth_registry.rs
@@ -1649,7 +1415,7 @@ pub struct RegisterStealthMeta<'info> {
 }
 ```
 
-### 6.6 Stealth Address Flow Diagram
+### 5.6 Stealth Address Flow Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -1699,7 +1465,7 @@ pub struct RegisterStealthMeta<'info> {
 
 ---
 
-## 7. Data Models & State
+## 6. Data Models & State
 
 > **Documentation Links:**
 > - [Anchor Account Constraints](https://www.anchor-lang.com/docs/account-constraints) - Account validation
@@ -1708,7 +1474,7 @@ pub struct RegisterStealthMeta<'info> {
 > - [PDAs (Program Derived Addresses)](https://solana.com/docs/core/pda) - Deterministic addresses
 > - [SPL Token Accounts](https://spl.solana.com/token) - Token account structure
 
-### 7.1 Account Types
+### 6.1 Account Types
 
 ```rust
 /// Employer/Organization Account (regular Solana account)
@@ -1762,7 +1528,7 @@ pub struct NullifierRegistry {
 }
 ```
 
-### 7.2 State Transitions
+### 6.2 State Transitions
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -1790,8 +1556,8 @@ pub struct NullifierRegistry {
 │          ┌─────────────┼─────────────┐                        │
 │          ▼             ▼             ▼                        │
 │   ┌──────────┐  ┌──────────┐  ┌──────────┐                   │
-│   │ PARTIAL  │  │ CLAIMED  │  │ SHIELDED │                   │
-│   │ CLAIM    │  │ (direct) │  │ (via Radr)│                   │
+│   │ PARTIAL  │  │ CLAIMED  │  │ BRIDGED  │                   │
+│   │ CLAIM    │  │ (direct) │  │ (CCTP)   │                   │
 │   └──────────┘  └──────────┘  └──────────┘                   │
 │                                                                │
 └─────────────────────────────────────────────────────────────────┘
@@ -1799,7 +1565,7 @@ pub struct NullifierRegistry {
 
 ---
 
-## 8. Implementation Phases
+## 7. Implementation Phases
 
 > **Documentation Links:**
 > - [Anchor Getting Started](https://www.anchor-lang.com/docs/installation) - Anchor setup
@@ -1917,21 +1683,24 @@ pub struct NullifierRegistry {
 - On-chain verifier
 - TypeScript proof generation library
 
-### Phase 4: Radr Integration (Week 5)
+### Phase 4: Stealth Addresses (Week 5)
 
-**Goal**: Shielded settlement
+**Goal**: Complete receiver privacy with ECDH stealth addresses
 
 | Task | Priority | Dependencies | Docs |
 |------|----------|--------------|------|
-| Integrate Radr SDK | HIGH | Phase 3 | [@shadowpay/server](https://www.npmjs.com/package/@shadowpay/server) |
-| Implement shielded withdrawal | HIGH | Radr SDK | [ShadowPay API](https://registry.scalar.com/@radr/apis/shadowpay-api) |
-| Test with Radr testnet | HIGH | Implementation | [Radr Labs](https://www.radrlabs.io/) |
-| MEV protection validation | MEDIUM | All above | [ShadowPay Docs](https://www.radrlabs.io/docs) |
+| Implement stealth meta-address registry | HIGH | Phase 1 | [EIP-5564](https://eips.ethereum.org/EIPS/eip-5564) |
+| ECDH key generation (TypeScript) | HIGH | None | [@noble/curves](https://github.com/paulmillr/noble-curves) |
+| Stealth address derivation | HIGH | ECDH keys | [Vitalik's Guide](https://vitalik.eth.limo/general/2023/01/20/stealth.html) |
+| Payment scanning service | HIGH | Stealth addresses | [Solana Websocket](https://solana.com/docs/rpc/websocket) |
+| Private key recovery for spending | HIGH | Scanning | [Ed25519 Arithmetic](https://ed25519.cr.yp.to/) |
+| Implement `process_claim` instruction | HIGH | Phase 3, Stealth | - |
 
 **Deliverables**:
-- Radr Labs integration
-- Full withdrawal flow
-- Privacy guarantees documentation
+- `stealth_registry.rs` - On-chain stealth meta-address storage
+- `lib/stealth-address.ts` - Client-side ECDH implementation
+- `instructions/claim.rs` - Process claim with ZK verification
+- Employee scanning interface
 
 ### Phase 5: Frontend & Testing (Week 6)
 
@@ -1951,27 +1720,9 @@ pub struct NullifierRegistry {
 - Full integration tests
 - Security documentation
 
-### Phase 6: Stealth Addresses (Week 7)
-
-**Goal**: Complete receiver privacy with ECDH stealth addresses
-
-| Task | Priority | Dependencies | Docs |
-|------|----------|--------------|------|
-| Implement stealth meta-address registry | HIGH | Phase 1 | [EIP-5564](https://eips.ethereum.org/EIPS/eip-5564) |
-| ECDH key generation (TypeScript) | HIGH | None | [@noble/curves](https://github.com/paulmillr/noble-curves) |
-| Stealth address derivation | HIGH | ECDH keys | [Vitalik's Guide](https://vitalik.eth.limo/general/2023/01/20/stealth.html) |
-| Payment scanning service | HIGH | Stealth addresses | [Solana Websocket](https://solana.com/docs/rpc/websocket) |
-| Private key recovery for spending | HIGH | Scanning | [Ed25519 Arithmetic](https://ed25519.cr.yp.to/) |
-| Integration with Radr settlement | HIGH | Phase 4 | [ShadowPay API](https://registry.scalar.com/@radr/apis/shadowpay-api) |
-
-**Deliverables**:
-- `stealth_registry.rs` - On-chain stealth meta-address storage
-- `lib/stealth-address.ts` - Client-side ECDH implementation
-- Employee scanning interface
-
 ---
 
-## 9. Directory Structure
+## 8. Directory Structure
 
 > **Documentation Links:**
 > - [Anchor Project Structure](https://www.anchor-lang.com/docs/project-template) - Standard Anchor layout
@@ -1999,7 +1750,6 @@ kage/
 │   │           │   ├── position.rs
 │   │           │   └── stealth_meta.rs   # Stealth meta-address
 │   │           ├── light_integration.rs  # Light Protocol PDAs (5000x savings)
-│   │           ├── radr_integration.rs   # Radr Labs ShadowPay
 │   │           ├── stealth_registry.rs   # ECDH Stealth addresses
 │   │           └── errors.rs
 │   │
@@ -2060,7 +1810,7 @@ kage/
 
 ---
 
-## 10. Security Considerations
+## 9. Security Considerations
 
 > **Documentation Links:**
 > - [Solana Security Best Practices](https://solana.com/docs/programs#security) - Program security
@@ -2071,45 +1821,43 @@ kage/
 > - [MPC Security Considerations](https://docs.arcium.com/learn/security) - Arcium security model
 > - [Groth16 Security](https://eprint.iacr.org/2016/260.pdf) - ZK-SNARK security paper
 
-### 10.1 Threat Model
+### 9.1 Threat Model
 
 | Threat | Mitigation |
 |--------|------------|
 | **Salary disclosure** | Arcium MPC encryption + Light compression |
-| **Withdrawal tracing** | Radr shielded pools + ZK nullifiers |
+| **Withdrawal tracing** | Stealth addresses + ZK nullifiers |
 | **Double withdrawal** | Nullifier registry + Merkle proofs |
 | **Identity linkage** | Pedersen commitments + ZK identity proofs |
-| **Receiver address reuse** | ECDH Stealth addresses (Layer 5) |
-| **MEV attacks** | Radr MEV protection + private mempools |
+| **Receiver address reuse** | ECDH Stealth addresses (Layer 4) |
 | **Oracle manipulation** | On-chain timestamps only |
 | **Key compromise** | Separate spend/view keys for stealth |
 | **Metadata leakage** | Encrypted memos + timing obfuscation |
 
-### 10.2 Privacy Layer Comparison
+### 9.2 Privacy Layer Comparison
 
 | Layer | Hides Amount | Hides Sender | Hides Receiver | Hides Timing |
 |-------|--------------|--------------|----------------|--------------|
 | Light Protocol | ❌ | ❌ | ❌ | ❌ |
 | Arcium MPC | ✅ | ❌ | ❌ | ❌ |
 | Noir ZK | ✅ | ✅ | ❌ | ❌ |
-| Radr ShadowPay | ✅ | ✅ | ⚠️ Partial | ⚠️ Partial |
 | Stealth Addresses | ❌ | ❌ | ✅ | ❌ |
-| **Combined** | ✅ | ✅ | ✅ | ⚠️ Partial |
+| **Combined** | ✅ | ✅ | ✅ | ❌ |
 
-### 10.3 Audit Checklist
+### 9.3 Audit Checklist
 
 - [ ] Arcium encryption key management
 - [ ] Merkle tree integrity
 - [ ] Nullifier uniqueness
 - [ ] ZK circuit soundness
-- [ ] Radr integration security
 - [ ] Stealth address ECDH correctness
 - [ ] View key scanning privacy
 - [ ] Access control validation
+- [ ] CCTP bridge security
 
 ---
 
-## 11. Sources & References
+## 10. Sources & References
 
 ### USDC & Circle CCTP (Cross-Chain)
 - [Circle CCTP Documentation](https://developers.circle.com/cctp) - Main CCTP docs
@@ -2159,17 +1907,6 @@ kage/
   - `nargo` CLI for compilation and proof generation
   - NoirJS for browser-based proof generation
 
-### Radr Labs ShadowPay
-- [Radr Labs Website](https://www.radrlabs.io/)
-- [ShadowPay API Reference](https://registry.scalar.com/@radr/apis/shadowpay-api)
-- [ShadowID Documentation](https://www.radrlabs.io/docs/shadowid)
-- [@shadowpay/server NPM Package](https://www.npmjs.com/package/@shadowpay/server)
-- **Key Concepts**:
-  - ElGamal encryption on BN254 curve
-  - Groth16 ZK-SNARKs for verification
-  - Bitmap-based nullifiers
-  - Relayer infrastructure for sender anonymity
-
 ### Stealth Addresses
 - [GhostSol/Zera Privacy SDK](https://github.com/jskoiz/zeraprivacy) - Reference implementation
 - [Solana Token-2022 Confidential Transfers](https://spl.solana.com/confidential-token/deep-dive/zkps)
@@ -2186,20 +1923,6 @@ kage/
 - [Solana Program Library](https://spl.solana.com/)
 - [@noble/curves](https://github.com/paulmillr/noble-curves) - Cryptographic primitives
 - [@noble/hashes](https://github.com/paulmillr/noble-hashes) - Hash functions
-
----
-
-## 12. Decision Matrix: Radr Labs vs Custom Stealth
-
-| Requirement | Radr Labs | Custom Stealth | Recommendation |
-|-------------|-----------|----------------|----------------|
-| Amount privacy | ✅ Built-in | ❌ Not included | Use Radr |
-| Receiver privacy | ❌ Not included | ✅ Full stealth | Build custom |
-| Relayer infra | ✅ Ready to use | ❌ Must build | Use Radr |
-| SDK maturity | ✅ Production | ⚠️ Custom code | Use Radr |
-| Full privacy | ⚠️ Partial | ✅ When combined | **Hybrid** |
-
-**Recommendation**: Use both Radr Labs (for amount privacy + relayers) AND custom ECDH stealth addresses (for receiver privacy). This hybrid approach provides complete privacy coverage.
 
 ---
 
