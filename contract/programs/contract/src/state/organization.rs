@@ -10,8 +10,10 @@ pub struct Organization {
     pub name_hash: [u8; 32],
     /// Number of vesting schedules created
     pub schedule_count: u64,
-    /// Number of vesting positions created
+    /// Number of vesting positions created (regular Solana accounts)
     pub position_count: u64,
+    /// Number of compressed vesting positions (Light Protocol)
+    pub compressed_position_count: u64,
     /// Treasury account for token storage
     pub treasury: Pubkey,
     /// Token mint for vesting payments
@@ -28,11 +30,12 @@ impl Organization {
         32 + // name_hash
         8 +  // schedule_count
         8 +  // position_count
+        8 +  // compressed_position_count
         32 + // treasury
         32 + // token_mint
         1 +  // is_active
         1;   // bump
-    // Total: 154 bytes
+    // Total: 162 bytes
 
     pub const SEED_PREFIX: &'static [u8] = b"organization";
 }

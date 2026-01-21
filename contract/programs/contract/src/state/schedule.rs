@@ -18,8 +18,10 @@ pub struct VestingSchedule {
     pub token_mint: Pubkey,
     /// Whether this schedule is active
     pub is_active: bool,
-    /// Number of positions using this schedule
+    /// Number of positions using this schedule (regular Solana accounts)
     pub position_count: u64,
+    /// Number of compressed positions using this schedule (Light Protocol)
+    pub compressed_position_count: u64,
     /// PDA bump seed
     pub bump: u8,
 }
@@ -34,8 +36,9 @@ impl VestingSchedule {
         32 + // token_mint
         1 +  // is_active
         8 +  // position_count
+        8 +  // compressed_position_count
         1;   // bump
-    // Total: 114 bytes
+    // Total: 122 bytes
 
     pub const SEED_PREFIX: &'static [u8] = b"vesting_schedule";
 }

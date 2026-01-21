@@ -1,34 +1,57 @@
 use anchor_lang::prelude::*;
-use light_sdk::LightDiscriminator;
+use light_sdk::{LightDiscriminator, LightHasher};
 
 /// Compressed Vesting Position stored in Light Protocol Merkle tree.
 /// This provides 5000x cost reduction compared to regular Solana accounts.
 ///
 /// The compressed position stores encrypted vesting data in a Merkle tree,
 /// combining Light Protocol's cost efficiency with Arcium's privacy.
-#[derive(Clone, Debug, Default, LightDiscriminator, AnchorSerialize, AnchorDeserialize)]
+///
+/// Light Protocol derives:
+/// - LightDiscriminator: Provides unique 8-byte discriminator for the account type
+/// - LightHasher: Implements DataHasher for Merkle tree storage (uses Poseidon by default)
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    LightDiscriminator,
+    LightHasher,
+    AnchorSerialize,
+    AnchorDeserialize,
+)]
 pub struct CompressedVestingPosition {
     /// Owner of this position (for address derivation)
+    #[hash]
     pub owner: Pubkey,
     /// Organization this position belongs to
+    #[hash]
     pub organization: Pubkey,
     /// Vesting schedule used for this position
+    #[hash]
     pub schedule: Pubkey,
     /// Unique position identifier within the organization
+    #[hash]
     pub position_id: u64,
     /// Commitment hash of beneficiary identity (Pedersen commitment for privacy)
+    #[hash]
     pub beneficiary_commitment: [u8; 32],
     /// Encrypted total vesting amount (Arcium ciphertext)
+    #[hash]
     pub encrypted_total_amount: [u8; 32],
     /// Encrypted amount already claimed (Arcium ciphertext)
+    #[hash]
     pub encrypted_claimed_amount: [u8; 32],
     /// Nonce for Arcium encryption
+    #[hash]
     pub nonce: u128,
     /// Vesting start timestamp (Unix seconds)
+    #[hash]
     pub start_timestamp: i64,
     /// Whether this position is active
+    #[hash]
     pub is_active: u8, // 1 = active, 0 = inactive (u8 for Light compatibility)
     /// Whether all tokens have been claimed
+    #[hash]
     pub is_fully_claimed: u8, // 1 = fully claimed, 0 = not
 }
 

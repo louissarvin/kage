@@ -3,19 +3,24 @@ use arcium_anchor::prelude::*;
 use arcium_client::idl::arcium::types::{CallbackAccount, CircuitSource, OffChainCircuitSource};
 use arcium_macros::circuit_hash;
 
+// Light Protocol imports for compressed positions (5000x cost reduction)
+use light_sdk::{
+    account::LightAccount,
+    address::v1::derive_address,
+    cpi::{
+        v1::{CpiAccounts, LightSystemProgramCpi},
+        InvokeLightSystemProgram, LightCpiInstruction,
+    },
+    derive_light_cpi_signer,
+    instruction::{PackedAddressTreeInfo, ValidityProof},
+    CpiSigner,
+};
+
 pub mod errors;
 pub mod state;
 
 use errors::ShadowVestError;
-use state::{Organization, VestingPosition, VestingSchedule};
-
-// Phase 2b: Light Protocol imports for compressed positions (5000x cost reduction)
-// The CompressedVestingPosition schema is ready in state/compressed_position.rs
-// Full CPI integration requires careful alignment with light-sdk v0.18.0 API:
-// - light_sdk::cpi::v1::{CpiAccounts, LightSystemProgramCpi}
-// - light_sdk::account::LightAccount
-// - light_sdk::instruction::{ValidityProof, PackedAddressTreeInfo}
-// - light_sdk::cpi::InvokeLightSystemProgram trait
+use state::{CompressedVestingPosition, Organization, VestingPosition, VestingSchedule};
 
 // Computation definition offsets for Arcium circuits
 const COMP_DEF_OFFSET_INIT_POSITION: u32 = comp_def_offset("init_position");
@@ -23,6 +28,11 @@ const COMP_DEF_OFFSET_CALCULATE_VESTED: u32 = comp_def_offset("calculate_vested"
 const COMP_DEF_OFFSET_PROCESS_CLAIM: u32 = comp_def_offset("process_claim");
 
 declare_id!("3bPHRjdQb1a6uxE5TAVwJRMBCLdjAwsorNKJgwAALGbA");
+
+// Light Protocol CPI signer for compressed account operations
+// This PDA is derived from "cpi_authority" seed and our program ID
+pub const LIGHT_CPI_SIGNER: CpiSigner =
+    derive_light_cpi_signer!("3bPHRjdQb1a6uxE5TAVwJRMBCLdjAwsorNKJgwAALGbA");
 
 #[arcium_program]
 pub mod contract {
@@ -84,6 +94,7 @@ pub mod contract {
         organization.name_hash = name_hash;
         organization.schedule_count = 0;
         organization.position_count = 0;
+        organization.compressed_position_count = 0;
         organization.treasury = treasury;
         organization.token_mint = token_mint;
         organization.is_active = true;
@@ -135,6 +146,7 @@ pub mod contract {
         schedule.token_mint = organization.token_mint;
         schedule.is_active = true;
         schedule.position_count = 0;
+        schedule.compressed_position_count = 0;
         schedule.bump = ctx.bumps.schedule;
 
         organization.schedule_count = organization
@@ -350,21 +362,135 @@ pub mod contract {
     // ============================================================
     // Compressed Vesting Positions (Light Protocol - 5000x cost reduction)
     // ============================================================
-    //
-    // Phase 2b: Light Protocol integration for compressed accounts
-    // Schema is ready in state/compressed_position.rs
-    //
-    // Instructions to implement:
-    // - create_compressed_vesting_position
-    // - update_compressed_vesting_position
-    //
-    // Required light-sdk v0.18.0 components:
-    // - CpiAccounts::new(signer, remaining_accounts, LIGHT_CPI_SIGNER)
-    // - derive_address(seeds, tree_pubkey, program_id)
-    // - LightAccount::<T>::new_init(owner, address, output_tree_index)
-    // - LightSystemProgramCpi::new_cpi(signer, proof)
-    //     .with_light_account(account)
-    //     .invoke(cpi_accounts)
+
+    /// Create a compressed vesting position using Light Protocol.
+    /// This stores the position in a Merkle tree for 5000x cost reduction.
+    ///
+    /// The position data is hashed and stored in Light Protocol's state tree,
+    /// while encrypted amounts are stored for Arcium MPC processing.
+    ///
+    /// # Arguments
+    /// * `proof_bytes` - Serialized validity proof for Light Protocol state transition
+    /// * `address_tree_info_bytes` - Serialized address tree info for derivation
+    /// * `output_tree_index` - Index of the output state tree
+    /// * `beneficiary_commitment` - Hash commitment of beneficiary identity
+    /// * `encrypted_total_amount` - Arcium-encrypted total vesting amount
+    /// * `nonce` - Nonce for Arcium encryption
+    ///
+    /// Note: This instruction requires Light Protocol accounts in remaining_accounts:
+    /// - light_system_program
+    /// - account_compression_program
+    /// - registered_program_pda
+    /// - noop_program
+    /// - cpi_authority_pda
+    /// - state_merkle_tree
+    /// - address_merkle_tree
+    /// - address_queue
+    pub fn create_compressed_vesting_position<'info>(
+        ctx: Context<'_, '_, '_, 'info, CreateCompressedVestingPosition<'info>>,
+        proof_bytes: Vec<u8>,
+        address_tree_info_bytes: Vec<u8>,
+        output_tree_index: u8,
+        beneficiary_commitment: [u8; 32],
+        encrypted_total_amount: [u8; 32],
+        nonce: u128,
+    ) -> Result<()> {
+        // Validate organization and schedule state
+        require!(
+            ctx.accounts.organization.is_active,
+            ShadowVestError::OrganizationNotActive
+        );
+        require!(
+            ctx.accounts.schedule.is_active,
+            ShadowVestError::ScheduleNotActive
+        );
+
+        // Deserialize the Light Protocol types from bytes
+        let proof: ValidityProof = borsh::BorshDeserialize::try_from_slice(&proof_bytes)
+            .map_err(|_| ShadowVestError::LightProtocolCpiFailed)?;
+        let address_tree_info: PackedAddressTreeInfo =
+            borsh::BorshDeserialize::try_from_slice(&address_tree_info_bytes)
+                .map_err(|_| ShadowVestError::LightProtocolCpiFailed)?;
+
+        // Get current position ID and timestamp
+        let position_id = ctx.accounts.organization.compressed_position_count;
+        let clock = Clock::get()?;
+
+        // Initialize CPI accounts for Light Protocol
+        let cpi_accounts = CpiAccounts::new(
+            ctx.accounts.fee_payer.as_ref(),
+            ctx.remaining_accounts,
+            crate::LIGHT_CPI_SIGNER,
+        );
+
+        // Derive unique address for this compressed position
+        // Seeds: [prefix, organization, position_id]
+        let (address, address_seed) = derive_address(
+            &[
+                CompressedVestingPosition::SEED_PREFIX,
+                ctx.accounts.organization.key().as_ref(),
+                &position_id.to_le_bytes(),
+            ],
+            &address_tree_info
+                .get_tree_pubkey(&cpi_accounts)
+                .map_err(|_| ShadowVestError::InvalidAddressTree)?,
+            &crate::ID,
+        );
+
+        // Create new address parameters for the Merkle tree
+        let new_address_params = address_tree_info.into_new_address_params_packed(address_seed);
+
+        // Initialize the compressed vesting position
+        let mut compressed_position =
+            LightAccount::<CompressedVestingPosition>::new_init(&crate::ID, Some(address), output_tree_index);
+
+        // Set position data
+        compressed_position.owner = ctx.accounts.admin.key();
+        compressed_position.organization = ctx.accounts.organization.key();
+        compressed_position.schedule = ctx.accounts.schedule.key();
+        compressed_position.position_id = position_id;
+        compressed_position.beneficiary_commitment = beneficiary_commitment;
+        compressed_position.encrypted_total_amount = encrypted_total_amount;
+        compressed_position.encrypted_claimed_amount = [0u8; 32];
+        compressed_position.nonce = nonce;
+        compressed_position.start_timestamp = clock.unix_timestamp;
+        compressed_position.is_active = 1;
+        compressed_position.is_fully_claimed = 0;
+
+        // Execute Light Protocol CPI to create the compressed account
+        LightSystemProgramCpi::new_cpi(crate::LIGHT_CPI_SIGNER, proof)
+            .with_new_addresses(&[new_address_params])
+            .with_light_account(compressed_position)?
+            .invoke(cpi_accounts)?;
+
+        // Update organization counter
+        ctx.accounts.organization.compressed_position_count = ctx
+            .accounts
+            .organization
+            .compressed_position_count
+            .checked_add(1)
+            .ok_or(ShadowVestError::ArithmeticOverflow)?;
+
+        // Update schedule counter
+        ctx.accounts.schedule.compressed_position_count = ctx
+            .accounts
+            .schedule
+            .compressed_position_count
+            .checked_add(1)
+            .ok_or(ShadowVestError::ArithmeticOverflow)?;
+
+        // Emit event for indexing
+        emit!(CompressedPositionCreated {
+            organization: ctx.accounts.organization.key(),
+            schedule: ctx.accounts.schedule.key(),
+            position_id,
+            address,
+            beneficiary_commitment,
+            start_timestamp: clock.unix_timestamp,
+        });
+
+        Ok(())
+    }
 }
 
 // ============================================================
@@ -626,8 +752,54 @@ pub struct CreateVestingSchedule<'info> {
 // ============================================================
 // Account Contexts - Compressed Vesting Positions (Light Protocol)
 // ============================================================
-// Phase 2b: Account contexts for compressed positions will be added here
-// See state/compressed_position.rs for the data schema
+
+/// Account context for creating compressed vesting positions.
+/// Uses Light Protocol CPI for 5000x cost reduction.
+///
+/// Note: Light Protocol accounts are passed via `remaining_accounts`:
+/// - light_system_program
+/// - account_compression_program
+/// - registered_program_pda
+/// - noop_program
+/// - cpi_authority_pda
+/// - state_merkle_tree
+/// - address_merkle_tree
+/// - address_queue
+#[derive(Accounts)]
+pub struct CreateCompressedVestingPosition<'info> {
+    /// Fee payer for the Light Protocol CPI transaction
+    #[account(mut)]
+    pub fee_payer: Signer<'info>,
+
+    /// Organization admin who can create positions
+    pub admin: Signer<'info>,
+
+    /// Organization account (mutable for counter update)
+    #[account(
+        mut,
+        seeds = [Organization::SEED_PREFIX, admin.key().as_ref()],
+        bump = organization.bump,
+        has_one = admin @ ShadowVestError::UnauthorizedAdmin,
+    )]
+    pub organization: Account<'info, Organization>,
+
+    /// Vesting schedule for this position
+    #[account(
+        mut,
+        seeds = [
+            VestingSchedule::SEED_PREFIX,
+            organization.key().as_ref(),
+            schedule.schedule_id.to_le_bytes().as_ref()
+        ],
+        bump = schedule.bump,
+        constraint = schedule.organization == organization.key() @ ShadowVestError::InvalidScheduleParams,
+    )]
+    pub schedule: Account<'info, VestingSchedule>,
+
+    /// System program for account creation
+    pub system_program: Program<'info, System>,
+    // Remaining accounts are provided dynamically for Light Protocol CPI
+}
 
 // ============================================================
 // Events
@@ -684,10 +856,25 @@ pub struct VestedAmountCalculated {
 }
 
 // Phase 2b: Events for compressed positions
-// #[event]
-// pub struct CompressedPositionCreated { ... }
-// #[event]
-// pub struct CompressedPositionUpdated { ... }
+
+#[event]
+pub struct CompressedPositionCreated {
+    pub organization: Pubkey,
+    pub schedule: Pubkey,
+    pub position_id: u64,
+    /// Light Protocol derived address for this compressed account
+    pub address: [u8; 32],
+    pub beneficiary_commitment: [u8; 32],
+    pub start_timestamp: i64,
+}
+
+#[event]
+pub struct CompressedPositionUpdated {
+    pub organization: Pubkey,
+    pub position_id: u64,
+    pub address: [u8; 32],
+    pub new_encrypted_claimed_amount: [u8; 32],
+}
 
 // ============================================================
 // Error Codes

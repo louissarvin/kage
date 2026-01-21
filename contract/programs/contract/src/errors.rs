@@ -46,4 +46,10 @@ pub enum ShadowVestError {
 
     #[msg("Position does not belong to this organization")]
     InvalidPositionOrganization,
+
+    #[msg("Invalid address tree for Light Protocol")]
+    InvalidAddressTree,
+
+    #[msg("Light Protocol CPI failed")]
+    LightProtocolCpiFailed,
 }

@@ -3,14 +3,18 @@
   "scripts": {
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
-    "payroll:distribute": "ts-node lib/compressed-payroll.ts"
+    "payroll:distribute": "ts-node lib/compressed-payroll.ts",
+    "test": "ts-mocha -p ./tsconfig.json -t 120000 tests/**/*.ts",
+    "test:payroll": "ts-mocha -p ./tsconfig.json -t 120000 tests/compressed-payroll.ts",
+    "test:cctp": "ts-mocha -p ./tsconfig.json -t 120000 tests/cctp-bridge.ts"
   },
   "dependencies": {
     "@arcium-hq/client": "0.6.3",
     "@coral-xyz/anchor": "0.31.1",
     "@lightprotocol/compressed-token": "^0.21.0",
     "@lightprotocol/stateless.js": "^0.21.0",
-    "@solana/spl-token": "^0.4.0"
+    "@solana/spl-token": "^0.4.0",
+    "bn.js": "^5.2.1"
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.0",
