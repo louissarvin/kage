@@ -6,7 +6,7 @@
   },
   "dependencies": {
     "@arcium-hq/client": "0.6.3",
-    "@coral-xyz/anchor": "^0.32.1"
+    "@coral-xyz/anchor": "0.31.1"
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.0",

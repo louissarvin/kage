@@ -1,5 +1,7 @@
 use anchor_lang::prelude::*;
 use arcium_anchor::prelude::*;
+use arcium_client::idl::arcium::types::{CallbackAccount, CircuitSource, OffChainCircuitSource};
+use arcium_macros::circuit_hash;
 
 pub mod errors;
 pub mod state;
@@ -12,7 +14,7 @@ const COMP_DEF_OFFSET_INIT_POSITION: u32 = comp_def_offset("init_position");
 const COMP_DEF_OFFSET_CALCULATE_VESTED: u32 = comp_def_offset("calculate_vested");
 const COMP_DEF_OFFSET_PROCESS_CLAIM: u32 = comp_def_offset("process_claim");
 
-declare_id!("5wCRYkx2RqFNZB1554z2Vxmp2Rm7H2EEVcCrMxoquT5T");
+declare_id!("3bPHRjdQb1a6uxE5TAVwJRMBCLdjAwsorNKJgwAALGbA");
 
 #[arcium_program]
 pub mod contract {
@@ -23,17 +25,38 @@ pub mod contract {
     // ============================================================
 
     pub fn init_init_position_comp_def(ctx: Context<InitInitPositionCompDef>) -> Result<()> {
-        init_comp_def(ctx.accounts, None, None)?;
+        init_comp_def(
+            ctx.accounts,
+            Some(CircuitSource::OffChain(OffChainCircuitSource {
+                source: "usingoffchainapproach".to_string(),
+                hash: circuit_hash!("init_position"),
+            })),
+            None,
+        )?;
         Ok(())
     }
 
     pub fn init_calculate_vested_comp_def(ctx: Context<InitCalculateVestedCompDef>) -> Result<()> {
-        init_comp_def(ctx.accounts, None, None)?;
+        init_comp_def(
+            ctx.accounts,
+            Some(CircuitSource::OffChain(OffChainCircuitSource {
+                source: "usingoffchainapproach".to_string(),
+                hash: circuit_hash!("calculate_vested"),
+            })),
+            None,
+        )?;
         Ok(())
     }
 
     pub fn init_process_claim_comp_def(ctx: Context<InitProcessClaimCompDef>) -> Result<()> {
-        init_comp_def(ctx.accounts, None, None)?;
+        init_comp_def(
+            ctx.accounts,
+            Some(CircuitSource::OffChain(OffChainCircuitSource {
+                source: "usingoffchainapproach".to_string(),
+                hash: circuit_hash!("process_claim"),
+            })),
+            None,
+        )?;
         Ok(())
     }
 
@@ -169,10 +192,15 @@ pub mod contract {
             .encrypted_u64(encrypted_total_amount)
             .build();
 
+        let position_callback_account = CallbackAccount {
+            pubkey: ctx.accounts.position.key(),
+            is_writable: true,
+        };
+
         let callback_ix = InitPositionCallback::callback_ix(
             computation_offset,
             &ctx.accounts.mxe_account,
-            &[],
+            &[position_callback_account],
         )?;
 
         queue_computation(
@@ -239,31 +267,32 @@ pub mod contract {
     pub fn calculate_vested_amount(
         ctx: Context<CalculateVestedAmount>,
         computation_offset: u64,
+        encrypted_total_amount: [u8; 32],
+        encrypted_claimed_amount: [u8; 32],
+        encrypted_vesting_numerator: [u8; 32],
         pubkey: [u8; 32],
         nonce: u128,
     ) -> Result<()> {
         let position = &ctx.accounts.position;
-        let schedule = &ctx.accounts.schedule;
 
         require!(position.is_active, ShadowVestError::PositionNotActive);
         require!(!position.is_fully_claimed, ShadowVestError::PositionFullyClaimed);
 
-        let clock = Clock::get()?;
-        let current_timestamp = clock.unix_timestamp as u64;
-
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
+        // All values must be encrypted with the same key/nonce for MPC
         let args = ArgBuilder::new()
             .x25519_pubkey(pubkey)
             .plaintext_u128(nonce)
-            .encrypted_u64(position.encrypted_total_amount)
-            .encrypted_u64(position.encrypted_claimed_amount)
-            .plaintext_u64(schedule.cliff_duration)
-            .plaintext_u64(schedule.total_duration)
-            .plaintext_u64(schedule.vesting_interval)
-            .plaintext_u64(position.start_timestamp as u64)
-            .plaintext_u64(current_timestamp)
+            .encrypted_u64(encrypted_total_amount)
+            .encrypted_u64(encrypted_claimed_amount)
+            .encrypted_u64(encrypted_vesting_numerator)
             .build();
+
+        let position_callback_account = CallbackAccount {
+            pubkey: ctx.accounts.position.key(),
+            is_writable: false,
+        };
 
         queue_computation(
             ctx.accounts,
@@ -273,7 +302,7 @@ pub mod contract {
             vec![CalculateVestedCallback::callback_ix(
                 computation_offset,
                 &ctx.accounts.mxe_account,
-                &[],
+                &[position_callback_account],
             )?],
             1,
             0,
@@ -349,12 +378,12 @@ pub struct CreateVestingPosition<'info> {
         init_if_needed,
         space = 9,
         payer = payer,
-        seeds = [SIGN_PDA_SEED.as_ref()],
+        seeds = [b"ArciumSignerAccount"],
         bump,
     )]
     pub sign_pda_account: Account<'info, ArciumSignerAccount>,
     #[account(address = derive_mxe_pda!())]
-    pub mxe_account: Account<'info, MXEAccount>,
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
     #[account(mut, address = derive_mempool_pda!(mxe_account, ErrorCode::ClusterNotSet))]
     /// CHECK: mempool_account
     pub mempool_account: UncheckedAccount<'info>,
@@ -365,13 +394,13 @@ pub struct CreateVestingPosition<'info> {
     /// CHECK: computation_account
     pub computation_account: UncheckedAccount<'info>,
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_INIT_POSITION))]
-    pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
+    pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
     #[account(mut, address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet))]
-    pub cluster_account: Account<'info, Cluster>,
+    pub cluster_account: Box<Account<'info, Cluster>>,
     #[account(mut, address = ARCIUM_FEE_POOL_ACCOUNT_ADDRESS)]
-    pub pool_account: Account<'info, FeePool>,
+    pub pool_account: Box<Account<'info, FeePool>>,
     #[account(mut, address = ARCIUM_CLOCK_ACCOUNT_ADDRESS)]
-    pub clock_account: Account<'info, ClockAccount>,
+    pub clock_account: Box<Account<'info, ClockAccount>>,
     pub system_program: Program<'info, System>,
     pub arcium_program: Program<'info, Arcium>,
 }
@@ -425,12 +454,12 @@ pub struct CalculateVestedAmount<'info> {
         init_if_needed,
         space = 9,
         payer = payer,
-        seeds = [SIGN_PDA_SEED.as_ref()],
+        seeds = [b"ArciumSignerAccount"],
         bump,
     )]
     pub sign_pda_account: Account<'info, ArciumSignerAccount>,
     #[account(address = derive_mxe_pda!())]
-    pub mxe_account: Account<'info, MXEAccount>,
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
     #[account(mut, address = derive_mempool_pda!(mxe_account, ErrorCode::ClusterNotSet))]
     /// CHECK: mempool_account
     pub mempool_account: UncheckedAccount<'info>,
@@ -441,13 +470,13 @@ pub struct CalculateVestedAmount<'info> {
     /// CHECK: computation_account
     pub computation_account: UncheckedAccount<'info>,
     #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_CALCULATE_VESTED))]
-    pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
+    pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
     #[account(mut, address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet))]
-    pub cluster_account: Account<'info, Cluster>,
+    pub cluster_account: Box<Account<'info, Cluster>>,
     #[account(mut, address = ARCIUM_FEE_POOL_ACCOUNT_ADDRESS)]
-    pub pool_account: Account<'info, FeePool>,
+    pub pool_account: Box<Account<'info, FeePool>>,
     #[account(mut, address = ARCIUM_CLOCK_ACCOUNT_ADDRESS)]
-    pub clock_account: Account<'info, ClockAccount>,
+    pub clock_account: Box<Account<'info, ClockAccount>>,
     pub system_program: Program<'info, System>,
     pub arcium_program: Program<'info, Arcium>,
 }
@@ -621,6 +650,7 @@ pub struct VestedAmountCalculated {
     pub nonce: [u8; 16],
 }
 
+
 // ============================================================
 // Error Codes
 // ============================================================
@@ -632,5 +662,3 @@ pub enum ErrorCode {
     #[msg("Cluster not set")]
     ClusterNotSet,
 }
-
-const SIGN_PDA_SEED: [u8; 8] = *b"sign_pda";

@@ -19,22 +19,20 @@ mod circuits {
         claimed_amount: u64,
     }
 
-    /// Input for calculating vested amount
+    /// Input for calculating vested amount (OPTIMIZED)
+    /// Time-based fraction is pre-computed off-chain from exact timestamps in seconds
+    /// This avoids expensive division in MPC while keeping exact time semantics
     pub struct CalculateVestedInput {
         /// Encrypted total amount
         total_amount: u64,
         /// Encrypted claimed amount
         claimed_amount: u64,
-        /// Cliff duration in seconds
-        cliff_duration: u64,
-        /// Total vesting duration in seconds
-        total_duration: u64,
-        /// Vesting interval in seconds
-        vesting_interval: u64,
-        /// Start timestamp
-        start_timestamp: u64,
-        /// Current timestamp
-        current_timestamp: u64,
+        /// Vesting numerator - pre-computed from timestamps (0 to PRECISION)
+        /// Calculated off-chain as: (elapsed_intervals * interval) * PRECISION / vesting_duration
+        /// = 0 if cliff not passed
+        /// = PRECISION (1_000_000) if fully vested
+        /// This preserves exact second-based vesting with interval snapshots
+        vesting_numerator: u64,
     }
 
     /// Output for calculate_vested
@@ -44,6 +42,9 @@ mod circuits {
         /// Claimable amount (vested - claimed)
         claimable_amount: u64,
     }
+
+    /// Precision constant for vesting fraction (10^6 = 0.0001% precision)
+    const PRECISION: u64 = 1_000_000;
 
     /// Input for processing a claim
     pub struct ProcessClaimInput {
@@ -76,42 +77,33 @@ mod circuits {
         input.owner.from_arcis(result)
     }
 
-    /// Calculate the vested amount based on time elapsed
+    /// Calculate the vested amount based on pre-computed time fraction
+    ///
+    /// The vesting_numerator is computed off-chain from exact timestamps:
+    /// ```
+    /// if current_time < start_time + cliff_duration:
+    ///     vesting_numerator = 0
+    /// elif current_time >= start_time + total_duration:
+    ///     vesting_numerator = PRECISION (1_000_000)
+    /// else:
+    ///     elapsed = current_time - start_time - cliff_duration
+    ///     intervals = elapsed / vesting_interval
+    ///     vested_seconds = intervals * vesting_interval
+    ///     vesting_numerator = vested_seconds * PRECISION / (total_duration - cliff_duration)
+    /// ```
+    ///
+    /// This keeps exact second-based semantics while avoiding expensive MPC division
     #[instruction]
     pub fn calculate_vested(
         input: Enc<Shared, CalculateVestedInput>,
     ) -> Enc<Shared, CalculateVestedResult> {
         let data = input.to_arcis();
 
-        // Calculate elapsed time
-        let elapsed = if data.current_timestamp > data.start_timestamp {
-            data.current_timestamp - data.start_timestamp
-        } else {
-            0
-        };
+        // Simple calculation: vested = total * numerator / PRECISION
+        // The division by constant PRECISION is much cheaper than variable division
+        let vested_amount = data.total_amount * data.vesting_numerator / PRECISION;
 
-        // Check if cliff has passed
-        let cliff_passed = elapsed >= data.cliff_duration;
-
-        // Calculate vested amount
-        let vested_amount: u64 = if !cliff_passed {
-            0
-        } else if elapsed >= data.total_duration {
-            // Fully vested
-            data.total_amount
-        } else {
-            // Calculate linear vesting with interval snapshots
-            let vesting_time = elapsed - data.cliff_duration;
-            let intervals_passed = vesting_time / data.vesting_interval;
-            let vested_time = intervals_passed * data.vesting_interval + data.cliff_duration;
-
-            // Linear vesting: total * vested_time / total_duration
-            // Use checked math to avoid overflow
-            let numerator = data.total_amount * vested_time;
-            numerator / data.total_duration
-        };
-
-        // Calculate claimable amount (vested - claimed)
+        // Claimable = vested - claimed (if positive)
         let claimable_amount = if vested_amount > data.claimed_amount {
             vested_amount - data.claimed_amount
         } else {
