@@ -1119,7 +1119,7 @@ Generate one-time addresses for every payment to break on-chain linkability:
 
 ### 5.2 Why Stealth Addresses Are Needed
 
-Radr Labs ShadowPay hides **amounts** but not **receiver addresses**. Without stealth addresses:
+Arcium MPC hides **amounts** but not **receiver addresses**. Without stealth addresses:
 
 ```
 ❌ Problem: Employer → Employee Address (visible on-chain)
@@ -1463,6 +1463,163 @@ pub struct RegisterStealthMeta<'info> {
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### 5.7 Arcium MPC Meta-Keys Storage (Optional Enhancement)
+
+The reference implementation includes **secure MPC storage** for meta-keys using Arcium:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              MPC META-KEYS STORAGE FLOW                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  WHY: Store (spend_key, view_key) securely on-chain             │
+│  - Employee doesn't need to manage keys locally                 │
+│  - Keys never exposed in plaintext on-chain                     │
+│  - MPC re-encrypts keys specifically for each read request      │
+│                                                                 │
+│  WRITE (Store keys):                                            │
+│  ┌────────────┐    Enc<Shared>     ┌─────────────────┐         │
+│  │  Employee  │───────────────────►│ Arcium MPC      │         │
+│  │  (client)  │   (encrypted)      │ write_meta_keys │         │
+│  └────────────┘                    └────────┬────────┘         │
+│                                             │                   │
+│                                             ▼                   │
+│                                    ┌─────────────────┐         │
+│                                    │ MetaKeysVault   │         │
+│                                    │ Enc<Mxe> stored │         │
+│                                    └─────────────────┘         │
+│                                                                 │
+│  READ (Retrieve keys):                                          │
+│  ┌────────────┐    session_key     ┌─────────────────┐         │
+│  │  Employee  │───────────────────►│ Arcium MPC      │         │
+│  │  (client)  │                    │ read_meta_keys  │         │
+│  └────────────┘                    └────────┬────────┘         │
+│        ▲                                    │                   │
+│        │         Enc<Shared>                │                   │
+│        └────────(re-encrypted)──────────────┘                   │
+│                                                                 │
+│  CIRCUIT CODE (encrypted-ixs):                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  pub struct MetaKeys {                                    │  │
+│  │    pub meta_spend_priv_lo: u128,  // bytes 0-15           │  │
+│  │    pub meta_spend_priv_hi: u128,  // bytes 16-31          │  │
+│  │    pub meta_view_priv_lo: u128,   // bytes 0-15           │  │
+│  │    pub meta_view_priv_hi: u128,   // bytes 16-31          │  │
+│  │  }                                                        │  │
+│  │                                                           │  │
+│  │  fn write_meta_keys(input: Enc<Shared>, mxe: Mxe)         │  │
+│  │    -> Enc<Mxe> { mxe.from_arcis(input.to_arcis()) }       │  │
+│  │                                                           │  │
+│  │  fn read_meta_keys(requester: Shared, stored: Enc<Mxe>)   │  │
+│  │    -> Enc<Shared> { requester.from_arcis(stored.to_arcis()) }│
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Account Structure:**
+```rust
+#[account]
+pub struct MetaKeysVault {
+    pub ciphertexts: [[u8; 32]; 4],  // [spend_lo, spend_hi, view_lo, view_hi]
+    pub nonce: u128,
+}
+```
+
+### 5.8 Complete ShadowVest Integration Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    SHADOWVEST COMPLETE PRIVACY FLOW                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ PHASE 1: EMPLOYEE ONBOARDING                                         │   │
+│  ├─────────────────────────────────────────────────────────────────────┤   │
+│  │                                                                       │   │
+│  │  Employee generates stealth meta-keys:                                │   │
+│  │  ┌──────────────┐    ┌──────────────┐    ┌──────────────────────┐   │   │
+│  │  │ spend_key(s) │    │ view_key(v)  │    │ Share with employer: │   │   │
+│  │  │ (secret)     │    │ (secret)     │    │ S = s*G, V = v*G     │   │   │
+│  │  └──────────────┘    └──────────────┘    └──────────────────────┘   │   │
+│  │         │                   │                       │                │   │
+│  │         └───────────────────┴───────────────────────┘                │   │
+│  │                             │                                         │   │
+│  │                             ▼                                         │   │
+│  │  Optional: Store in MPC    ┌─────────────────────┐                   │   │
+│  │  (Arcium encrypted)   ────►│ MetaKeysVault       │                   │   │
+│  │                            │ Enc<Mxe> on-chain   │                   │   │
+│  │                            └─────────────────────┘                   │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ PHASE 2: EMPLOYER CREATES VESTING (Privacy Preserved)                │   │
+│  ├─────────────────────────────────────────────────────────────────────┤   │
+│  │                                                                       │   │
+│  │  1. Derive stealth address          2. Create compressed position    │   │
+│  │  ┌──────────────────────────┐       ┌────────────────────────────┐  │   │
+│  │  │ r = random ephemeral     │       │ Light Protocol CPI         │  │   │
+│  │  │ R = r*G (publish)        │       │ - stealth_beneficiary      │  │   │
+│  │  │ shared = r*V             │  ───► │ - encrypted_total_amount   │  │   │
+│  │  │ stealth = S + H(shared)*G│       │ - emit: StealthPayEvent(R) │  │   │
+│  │  └──────────────────────────┘       └────────────────────────────┘  │   │
+│  │                                                │                     │   │
+│  │  3. Encrypt vesting amount (Arcium MPC)        │                     │   │
+│  │  ┌──────────────────────────┐                  │                     │   │
+│  │  │ init_position circuit    │◄─────────────────┘                     │   │
+│  │  │ - total_amount encrypted │                                        │   │
+│  │  │ - stored in Merkle tree  │                                        │   │
+│  │  └──────────────────────────┘                                        │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ PHASE 3: EMPLOYEE DISCOVERS & CLAIMS                                 │   │
+│  ├─────────────────────────────────────────────────────────────────────┤   │
+│  │                                                                       │   │
+│  │  1. Scan events for payments        2. Derive spending key           │   │
+│  │  ┌──────────────────────────┐       ┌────────────────────────────┐  │   │
+│  │  │ For each R in events:    │       │ shared = v*R (same secret) │  │   │
+│  │  │ - compute stealth addr   │  ───► │ stealth_priv = s+H(shared) │  │   │
+│  │  │ - check if matches mine  │       │ Can now sign transactions! │  │   │
+│  │  └──────────────────────────┘       └────────────────────────────┘  │   │
+│  │                                                │                     │   │
+│  │  3. Generate ZK proof (Noir)       4. Process claim                  │   │
+│  │  ┌──────────────────────────┐       ┌────────────────────────────┐  │   │
+│  │  │ Prove in browser:        │       │ ShadowVest verifies:       │  │   │
+│  │  │ - I control stealth addr │  ───► │ - Noir proof valid         │  │   │
+│  │  │ - claim ≤ vested amount  │       │ - Nullifier not used       │  │   │
+│  │  │ - nullifier commitment   │       │ - Update position (Light)  │  │   │
+│  │  └──────────────────────────┘       └────────────────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ PHASE 4: WITHDRAWAL OPTIONS                                          │   │
+│  ├─────────────────────────────────────────────────────────────────────┤   │
+│  │                                                                       │   │
+│  │  Option A: Direct USDC          Option B: Cross-Chain (CCTP)         │   │
+│  │  ┌────────────────────┐         ┌─────────────────────────────┐     │   │
+│  │  │ Transfer to any    │         │ Bridge to: ETH, Base, Arb,  │     │   │
+│  │  │ Solana wallet      │         │ Polygon, Avalanche, Noble   │     │   │
+│  │  │ (stealth or real)  │         │ Native USDC, no wrapped     │     │   │
+│  │  └────────────────────┘         └─────────────────────────────┘     │   │
+│  │                                                                       │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ PRIVACY GUARANTEES                                                   │   │
+│  ├─────────────────────────────────────────────────────────────────────┤   │
+│  │                                                                       │   │
+│  │  ✅ Amount Privacy     → Arcium MPC (encrypted vesting calculations)│   │
+│  │  ✅ Sender Privacy     → Noir ZK (prove eligibility without reveal) │   │
+│  │  ✅ Receiver Privacy   → Stealth Addresses (one-time ECDH addresses)│   │
+│  │  ✅ Cost Efficiency    → Light Protocol (5000x cheaper positions)   │   │
+│  │  ✅ Cross-Chain        → CCTP (native USDC to 9 chains)             │   │
+│  │                                                                       │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
 ---
 
 ## 6. Data Models & State
@@ -1687,20 +1844,76 @@ pub struct NullifierRegistry {
 
 **Goal**: Complete receiver privacy with ECDH stealth addresses
 
-| Task | Priority | Dependencies | Docs |
-|------|----------|--------------|------|
-| Implement stealth meta-address registry | HIGH | Phase 1 | [EIP-5564](https://eips.ethereum.org/EIPS/eip-5564) |
-| ECDH key generation (TypeScript) | HIGH | None | [@noble/curves](https://github.com/paulmillr/noble-curves) |
-| Stealth address derivation | HIGH | ECDH keys | [Vitalik's Guide](https://vitalik.eth.limo/general/2023/01/20/stealth.html) |
-| Payment scanning service | HIGH | Stealth addresses | [Solana Websocket](https://solana.com/docs/rpc/websocket) |
-| Private key recovery for spending | HIGH | Scanning | [Ed25519 Arithmetic](https://ed25519.cr.yp.to/) |
-| Implement `process_claim` instruction | HIGH | Phase 3, Stealth | - |
+**Reference Implementation**: `stealth/` folder contains working code to adapt
+
+| Task | Priority | Dependencies | Source Reference |
+|------|----------|--------------|------------------|
+| Add stealth instructions to program | HIGH | Phase 1 | `stealth/program/lib.rs` |
+| Update Arcium circuits (v0.3→v0.6) | MEDIUM | Arcium | `stealth/encrypted-ixs/lib.rs` |
+| Integrate with CompressedVestingPosition | HIGH | Phase 2a | Add `stealth_address` field |
+| Payment scanning service | HIGH | Events | Websocket listener |
+| Implement `process_claim` instruction | HIGH | Phase 3 | Connect Noir + Stealth |
+
+**Specific Tasks:**
+
+**Task 4.1: Port Stealth Library**
+```
+Target: contract/lib/stealth-address.ts
+
+Functions to port:
+- deriveStealthPub(metaSpend, metaView, ephPriv) → stealthPubkey
+- deriveStealthKeypair(metaSpendPriv, metaViewPub, ephPriv) → StealthSigner
+- encryptEphemeralPrivKey(ephPriv, metaViewPub) → encryptedPayload
+- decryptEphemeralPrivKey(payload, metaViewPriv, ephPub) → ephPriv
+- encryptNote() / decryptNote() → private messages
+- StealthSigner class → sign transactions from derived scalar
+```
+
+**Task 4.2: Add Stealth Program Instructions**
+```
+Source: stealth/program/lib.rs
+Target: contract/programs/contract/src/instructions/stealth.rs
+
+Instructions to add:
+- register_stealth_meta() - Employee registers (S, V) pubkeys
+- pay_to_stealth() - Create vesting with stealth beneficiary
+- withdraw_from_stealth() - Spend with derived key
+
+Events to add:
+- StealthPaymentEvent { ephemeral_pubkey, stealth_address, encrypted_memo }
+```
+
+**Task 4.3: Update Arcium Circuits (Optional MPC Storage)**
+```
+Source: stealth/encrypted-ixs/lib.rs (Arcium v0.3.0)
+Target: contract/encrypted-ixs/src/lib.rs (Arcium v0.6.3)
+
+Circuits to add:
+- write_meta_keys: Enc<Shared> → Enc<Mxe>
+- read_meta_keys: Enc<Mxe> → Enc<Shared>
+
+Account to add:
+- MetaKeysVault { ciphertexts: [[u8;32];4], nonce: u128 }
+```
+
+**Task 4.4: Integrate with Vesting Positions**
+```
+Modify: contract/programs/contract/src/state/compressed_position.rs
+
+Add field:
+- stealth_beneficiary: Pubkey (stealth address, not real identity)
+
+Modify create_compressed_vesting_position:
+- Accept stealth_address instead of beneficiary_commitment
+- Emit ephemeral_pubkey in event for scanning
+```
 
 **Deliverables**:
-- `stealth_registry.rs` - On-chain stealth meta-address storage
-- `lib/stealth-address.ts` - Client-side ECDH implementation
-- `instructions/claim.rs` - Process claim with ZK verification
-- Employee scanning interface
+- `contract/lib/stealth-address.ts` - Ported ECDH implementation
+- `contract/programs/contract/src/instructions/stealth.rs` - Stealth instructions
+- `contract/programs/contract/src/state/stealth_meta.rs` - Meta address account
+- Updated `CompressedVestingPosition` with stealth support
+- Employee scanning service (TypeScript)
 
 ### Phase 5: Frontend & Testing (Week 6)
 

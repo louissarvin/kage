@@ -52,4 +52,17 @@ pub enum ShadowVestError {
 
     #[msg("Light Protocol CPI failed")]
     LightProtocolCpiFailed,
+
+    // Phase 4: Stealth address errors
+    #[msg("Unauthorized owner")]
+    UnauthorizedOwner,
+
+    #[msg("Stealth meta-address is not active")]
+    StealthMetaNotActive,
+
+    #[msg("Meta-keys vault is not initialized")]
+    MetaKeysVaultNotInitialized,
+
+    #[msg("Invalid stealth payment")]
+    InvalidStealthPayment,
 }
