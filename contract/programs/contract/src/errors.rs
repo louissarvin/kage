@@ -65,4 +65,29 @@ pub enum ShadowVestError {
 
     #[msg("Invalid stealth payment")]
     InvalidStealthPayment,
+
+    // Phase 5: Claim and withdrawal errors
+    #[msg("Claim is not authorized")]
+    ClaimNotAuthorized,
+
+    #[msg("Claim has not been processed by MPC")]
+    ClaimNotProcessed,
+
+    #[msg("Claim has already been withdrawn")]
+    AlreadyWithdrawn,
+
+    #[msg("Invalid Ed25519 eligibility signature")]
+    InvalidEligibilitySignature,
+
+    #[msg("Signer does not match beneficiary commitment")]
+    SignerMismatch,
+
+    #[msg("Nullifier has already been used")]
+    NullifierAlreadyUsed,
+
+    #[msg("Invalid withdrawal destination")]
+    InvalidWithdrawalDestination,
+
+    #[msg("Insufficient vault balance for withdrawal")]
+    InsufficientVaultBalance,
 }

@@ -1,9 +1,11 @@
+pub mod claim_authorization;
 pub mod compressed_position;
 pub mod organization;
 pub mod position;
 pub mod schedule;
 pub mod stealth_meta;
 
+pub use claim_authorization::*;
 pub use compressed_position::*;
 pub use organization::*;
 pub use position::*;

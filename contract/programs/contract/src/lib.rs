@@ -1,4 +1,9 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::sysvar::instructions as sysvar_instructions;
+use anchor_spl::token::{self, Token, TokenAccount, Transfer};
+
+/// Ed25519 signature verification program ID
+const ED25519_PROGRAM_ID: Pubkey = Pubkey::from_str_const("Ed25519SigVerify111111111111111111111111111");
 use arcium_anchor::prelude::*;
 use arcium_client::idl::arcium::types::{CallbackAccount, CircuitSource, OffChainCircuitSource};
 use arcium_macros::circuit_hash;
@@ -21,8 +26,8 @@ pub mod state;
 
 use errors::ShadowVestError;
 use state::{
-    CompressedVestingPosition, MetaKeysVault, Organization, StealthMetaAddress, StealthPaymentEvent,
-    VestingPosition, VestingSchedule,
+    ClaimAuthorization, CompressedVestingPosition, MetaKeysVault, NullifierRecord,
+    Organization, StealthMetaAddress, StealthPaymentEvent, VestingPosition, VestingSchedule,
 };
 
 // Computation definition offsets for Arcium circuits
@@ -475,6 +480,317 @@ pub mod contract {
             encrypted_vested_amount: verified.field_0.ciphertexts[0],
             encrypted_claimable_amount: verified.field_0.ciphertexts[1],
             nonce: verified.field_0.nonce.to_le_bytes(),
+        });
+
+        Ok(())
+    }
+
+    // ============================================================
+    // Claim Authorization & Withdrawal
+    // ============================================================
+
+    /// Authorize a claim using Ed25519 stealth signature verification.
+    ///
+    /// The caller must prepend an Ed25519Program instruction that verifies
+    /// a signature from the stealth address (beneficiary_commitment) over
+    /// the message: hash(position_id, nullifier, withdrawal_destination).
+    ///
+    /// This creates a ClaimAuthorization PDA and a NullifierRecord PDA.
+    /// The NullifierRecord uses init constraint for double-claim prevention.
+    pub fn authorize_claim(
+        ctx: Context<AuthorizeClaim>,
+        nullifier: [u8; 32],
+        withdrawal_destination: Pubkey,
+    ) -> Result<()> {
+        let position = &ctx.accounts.position;
+
+        require!(position.is_active, ShadowVestError::PositionNotActive);
+        require!(!position.is_fully_claimed, ShadowVestError::PositionFullyClaimed);
+
+        // Verify the Ed25519 signature from the preceding instruction
+        // The instructions sysvar lets us read the previous instruction
+        let ix_sysvar = &ctx.accounts.instructions_sysvar;
+        let current_ix_index = sysvar_instructions::load_current_index_checked(ix_sysvar)
+            .map_err(|_| ShadowVestError::InvalidEligibilitySignature)?;
+
+        // The Ed25519 instruction must be the one immediately before this instruction
+        require!(
+            current_ix_index > 0,
+            ShadowVestError::InvalidEligibilitySignature
+        );
+
+        let ed25519_ix = sysvar_instructions::load_instruction_at_checked(
+            (current_ix_index - 1) as usize,
+            ix_sysvar,
+        )
+        .map_err(|_| ShadowVestError::InvalidEligibilitySignature)?;
+
+        // Verify it's an Ed25519 program instruction
+        require!(
+            ed25519_ix.program_id == ED25519_PROGRAM_ID,
+            ShadowVestError::InvalidEligibilitySignature
+        );
+
+        // Parse Ed25519 instruction data to verify pubkey matches beneficiary_commitment
+        // Ed25519 instruction format: num_signatures (u8) + padding (u8) + signature_offsets...
+        // Each signature offset struct: signature_offset(u16), signature_ix(u16),
+        //   pubkey_offset(u16), pubkey_ix(u16), message_offset(u16), message_size(u16), message_ix(u16)
+        require!(
+            ed25519_ix.data.len() >= 16,
+            ShadowVestError::InvalidEligibilitySignature
+        );
+
+        let num_signatures = ed25519_ix.data[0];
+        require!(
+            num_signatures == 1,
+            ShadowVestError::InvalidEligibilitySignature
+        );
+
+        // Extract pubkey offset (bytes 6-7, little-endian)
+        let pubkey_offset = u16::from_le_bytes([ed25519_ix.data[6], ed25519_ix.data[7]]) as usize;
+
+        // Extract the signing pubkey (32 bytes at pubkey_offset)
+        require!(
+            ed25519_ix.data.len() >= pubkey_offset + 32,
+            ShadowVestError::InvalidEligibilitySignature
+        );
+        let signer_pubkey = &ed25519_ix.data[pubkey_offset..pubkey_offset + 32];
+
+        // Verify the signer matches the position's beneficiary_commitment (stealth address)
+        require!(
+            signer_pubkey == position.beneficiary_commitment,
+            ShadowVestError::SignerMismatch
+        );
+
+        // Verify message is hash(position_id, nullifier, withdrawal_destination)
+        let message_data_offset = u16::from_le_bytes([ed25519_ix.data[10], ed25519_ix.data[11]]) as usize;
+        let message_data_size = u16::from_le_bytes([ed25519_ix.data[12], ed25519_ix.data[13]]) as usize;
+
+        require!(
+            ed25519_ix.data.len() >= message_data_offset + message_data_size,
+            ShadowVestError::InvalidEligibilitySignature
+        );
+
+        let signed_message = &ed25519_ix.data[message_data_offset..message_data_offset + message_data_size];
+
+        // Construct expected message: position_id || nullifier || withdrawal_destination (72 bytes)
+        let mut expected_msg = [0u8; 72];
+        expected_msg[..8].copy_from_slice(&position.position_id.to_le_bytes());
+        expected_msg[8..40].copy_from_slice(&nullifier);
+        expected_msg[40..72].copy_from_slice(withdrawal_destination.as_ref());
+
+        require!(
+            signed_message == expected_msg,
+            ShadowVestError::InvalidEligibilitySignature
+        );
+
+        // Initialize ClaimAuthorization
+        let clock = Clock::get()?;
+        let claim_auth = &mut ctx.accounts.claim_authorization;
+        claim_auth.position = position.key();
+        claim_auth.nullifier = nullifier;
+        claim_auth.withdrawal_destination = withdrawal_destination;
+        claim_auth.claim_amount = 0;
+        claim_auth.is_authorized = true;
+        claim_auth.is_processed = false;
+        claim_auth.is_withdrawn = false;
+        claim_auth.authorized_at = clock.unix_timestamp;
+        claim_auth.bump = ctx.bumps.claim_authorization;
+
+        // Initialize NullifierRecord (init constraint prevents double-use)
+        let nullifier_record = &mut ctx.accounts.nullifier_record;
+        nullifier_record.nullifier = nullifier;
+        nullifier_record.position = position.key();
+        nullifier_record.used_at = clock.unix_timestamp;
+        nullifier_record.bump = ctx.bumps.nullifier_record;
+
+        emit!(ClaimAuthorized {
+            position: position.key(),
+            nullifier,
+            withdrawal_destination,
+        });
+
+        Ok(())
+    }
+
+    /// Queue the process_claim MPC computation.
+    ///
+    /// Submits encrypted (claimed_amount, claim_amount, max_claimable) to Arcium MPC.
+    /// The MPC circuit validates claim_amount <= max_claimable.
+    /// Callback updates position.encrypted_claimed_amount and sets is_processed=true.
+    pub fn queue_process_claim(
+        ctx: Context<QueueProcessClaim>,
+        computation_offset: u64,
+        encrypted_claimed_amount: [u8; 32],
+        encrypted_claim_amount: [u8; 32],
+        encrypted_max_claimable: [u8; 32],
+        claim_amount: u64,
+        pubkey: [u8; 32],
+        nonce: u128,
+    ) -> Result<()> {
+        let claim_auth = &ctx.accounts.claim_authorization;
+
+        require!(claim_auth.is_authorized, ShadowVestError::ClaimNotAuthorized);
+        require!(!claim_auth.is_processed, ShadowVestError::ClaimNotProcessed);
+
+        let position = &ctx.accounts.position;
+        require!(position.is_active, ShadowVestError::PositionNotActive);
+
+        ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
+
+        let args = ArgBuilder::new()
+            .x25519_pubkey(pubkey)
+            .plaintext_u128(nonce)
+            .encrypted_u64(encrypted_claimed_amount)
+            .encrypted_u64(encrypted_claim_amount)
+            .encrypted_u64(encrypted_max_claimable)
+            .build();
+
+        let position_callback_account = CallbackAccount {
+            pubkey: ctx.accounts.position.key(),
+            is_writable: true,
+        };
+        let claim_auth_callback_account = CallbackAccount {
+            pubkey: ctx.accounts.claim_authorization.key(),
+            is_writable: true,
+        };
+
+        let callback_ix = ProcessClaimCallback::callback_ix(
+            computation_offset,
+            &ctx.accounts.mxe_account,
+            &[position_callback_account, claim_auth_callback_account],
+        )?;
+
+        queue_computation(
+            ctx.accounts,
+            computation_offset,
+            args,
+            None,
+            vec![callback_ix],
+            1,
+            0,
+        )?;
+
+        // Store claim_amount in the authorization for the callback to verify
+        let claim_auth_mut = &mut ctx.accounts.claim_authorization;
+        claim_auth_mut.claim_amount = claim_amount;
+
+        emit!(ClaimProcessQueued {
+            position: position.key(),
+            position_id: position.position_id,
+            claim_amount,
+            computation_offset,
+        });
+
+        Ok(())
+    }
+
+    /// Callback from the process_claim MPC computation.
+    ///
+    /// Verifies the MPC output and updates:
+    /// - position.encrypted_claimed_amount from output ciphertexts[0]
+    /// - claim_authorization.is_processed = true
+    #[arcium_callback(encrypted_ix = "process_claim")]
+    pub fn process_claim_callback(
+        ctx: Context<ProcessClaimCallback>,
+        output: SignedComputationOutputs<ProcessClaimOutput>,
+    ) -> Result<()> {
+        let verified = output
+            .verify_output(&ctx.accounts.cluster_account, &ctx.accounts.computation_account)
+            .map_err(|_| ErrorCode::AbortedComputation)?;
+
+        // Update position's encrypted claimed amount from MPC output
+        let position = &mut ctx.accounts.position;
+        position.encrypted_claimed_amount = verified.field_0.ciphertexts[0];
+
+        // Mark authorization as processed
+        let claim_auth = &mut ctx.accounts.claim_authorization;
+        claim_auth.is_processed = true;
+
+        emit!(ClaimProcessed {
+            position: position.key(),
+            position_id: position.position_id,
+            claim_amount: claim_auth.claim_amount,
+        });
+
+        Ok(())
+    }
+
+    /// Initialize the token vault for an organization.
+    ///
+    /// Creates a token account owned by a vault_authority PDA.
+    /// The organization admin can then deposit tokens to this vault.
+    pub fn initialize_vault(ctx: Context<InitializeVault>) -> Result<()> {
+        let organization = &ctx.accounts.organization;
+        require!(organization.is_active, ShadowVestError::OrganizationNotActive);
+
+        emit!(VaultInitialized {
+            organization: organization.key(),
+            vault: ctx.accounts.vault.key(),
+            vault_authority: ctx.accounts.vault_authority.key(),
+            token_mint: organization.token_mint,
+        });
+
+        Ok(())
+    }
+
+    /// Withdraw tokens from the organization vault to the beneficiary's destination.
+    ///
+    /// Verifies the claim has been authorized, processed by MPC, and not yet withdrawn.
+    /// Transfers claim_amount tokens from vault to destination.
+    pub fn withdraw(ctx: Context<Withdraw>) -> Result<()> {
+        let claim_auth = &ctx.accounts.claim_authorization;
+
+        require!(claim_auth.is_authorized, ShadowVestError::ClaimNotAuthorized);
+        require!(claim_auth.is_processed, ShadowVestError::ClaimNotProcessed);
+        require!(!claim_auth.is_withdrawn, ShadowVestError::AlreadyWithdrawn);
+
+        // Verify destination matches what was authorized
+        require!(
+            ctx.accounts.destination.key() == claim_auth.withdrawal_destination,
+            ShadowVestError::InvalidWithdrawalDestination
+        );
+
+        let amount = claim_auth.claim_amount;
+
+        // Verify vault has sufficient balance
+        require!(
+            ctx.accounts.vault.amount >= amount,
+            ShadowVestError::InsufficientVaultBalance
+        );
+
+        // Transfer tokens from vault to destination
+        let org_key = ctx.accounts.organization.key();
+        let bump = ctx.bumps.vault_authority;
+        let vault_authority_seeds: &[&[u8]] = &[
+            b"vault_authority",
+            org_key.as_ref(),
+            std::slice::from_ref(&bump),
+        ];
+        let signer_seeds = &[vault_authority_seeds];
+
+        let transfer_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            Transfer {
+                from: ctx.accounts.vault.to_account_info(),
+                to: ctx.accounts.destination.to_account_info(),
+                authority: ctx.accounts.vault_authority.to_account_info(),
+            },
+            signer_seeds,
+        );
+        token::transfer(transfer_ctx, amount)?;
+
+        // Mark as withdrawn
+        let claim_auth_mut = &mut ctx.accounts.claim_authorization;
+        claim_auth_mut.is_withdrawn = true;
+
+        let token_mint = ctx.accounts.vault.mint;
+
+        emit!(ClaimWithdrawn {
+            position: claim_auth_mut.position,
+            destination: claim_auth_mut.withdrawal_destination,
+            amount,
+            token_mint,
         });
 
         Ok(())
@@ -1388,6 +1704,217 @@ pub struct DeactivateStealthMeta<'info> {
 }
 
 // ============================================================
+// Account Contexts - Claim Authorization & Withdrawal
+// ============================================================
+
+#[derive(Accounts)]
+#[instruction(nullifier: [u8; 32])]
+pub struct AuthorizeClaim<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(
+        seeds = [Organization::SEED_PREFIX, organization.admin.as_ref()],
+        bump = organization.bump,
+    )]
+    pub organization: Account<'info, Organization>,
+
+    #[account(
+        seeds = [VestingPosition::SEED_PREFIX, organization.key().as_ref(), position.position_id.to_le_bytes().as_ref()],
+        bump = position.bump,
+        constraint = position.organization == organization.key() @ ShadowVestError::InvalidPositionOrganization,
+    )]
+    pub position: Account<'info, VestingPosition>,
+
+    #[account(
+        init,
+        payer = payer,
+        space = ClaimAuthorization::SIZE,
+        seeds = [ClaimAuthorization::SEED_PREFIX, position.key().as_ref(), nullifier.as_ref()],
+        bump,
+    )]
+    pub claim_authorization: Account<'info, ClaimAuthorization>,
+
+    #[account(
+        init,
+        payer = payer,
+        space = NullifierRecord::SIZE,
+        seeds = [NullifierRecord::SEED_PREFIX, organization.key().as_ref(), nullifier.as_ref()],
+        bump,
+    )]
+    pub nullifier_record: Account<'info, NullifierRecord>,
+
+    /// CHECK: Instructions sysvar for reading Ed25519 instruction
+    #[account(address = sysvar_instructions::ID)]
+    pub instructions_sysvar: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[queue_computation_accounts("process_claim", payer)]
+#[derive(Accounts)]
+#[instruction(computation_offset: u64)]
+pub struct QueueProcessClaim<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(
+        seeds = [Organization::SEED_PREFIX, organization.admin.as_ref()],
+        bump = organization.bump,
+    )]
+    pub organization: Account<'info, Organization>,
+
+    #[account(
+        seeds = [VestingPosition::SEED_PREFIX, organization.key().as_ref(), position.position_id.to_le_bytes().as_ref()],
+        bump = position.bump,
+        constraint = position.organization == organization.key() @ ShadowVestError::InvalidPositionOrganization,
+    )]
+    pub position: Account<'info, VestingPosition>,
+
+    #[account(
+        mut,
+        seeds = [ClaimAuthorization::SEED_PREFIX, position.key().as_ref(), claim_authorization.nullifier.as_ref()],
+        bump = claim_authorization.bump,
+        constraint = claim_authorization.position == position.key() @ ShadowVestError::InvalidPositionOrganization,
+    )]
+    pub claim_authorization: Account<'info, ClaimAuthorization>,
+
+    #[account(
+        init_if_needed,
+        space = 9,
+        payer = payer,
+        seeds = [b"ArciumSignerAccount"],
+        bump,
+    )]
+    pub sign_pda_account: Account<'info, ArciumSignerAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    #[account(mut, address = derive_mempool_pda!(mxe_account, ErrorCode::ClusterNotSet))]
+    /// CHECK: mempool_account
+    pub mempool_account: UncheckedAccount<'info>,
+    #[account(mut, address = derive_execpool_pda!(mxe_account, ErrorCode::ClusterNotSet))]
+    /// CHECK: executing_pool
+    pub executing_pool: UncheckedAccount<'info>,
+    #[account(mut, address = derive_comp_pda!(computation_offset, mxe_account, ErrorCode::ClusterNotSet))]
+    /// CHECK: computation_account
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_PROCESS_CLAIM))]
+    pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
+    #[account(mut, address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet))]
+    pub cluster_account: Box<Account<'info, Cluster>>,
+    #[account(mut, address = ARCIUM_FEE_POOL_ACCOUNT_ADDRESS)]
+    pub pool_account: Box<Account<'info, FeePool>>,
+    #[account(mut, address = ARCIUM_CLOCK_ACCOUNT_ADDRESS)]
+    pub clock_account: Box<Account<'info, ClockAccount>>,
+    pub system_program: Program<'info, System>,
+    pub arcium_program: Program<'info, Arcium>,
+}
+
+#[callback_accounts("process_claim")]
+#[derive(Accounts)]
+#[instruction(computation_offset: u64)]
+pub struct ProcessClaimCallback<'info> {
+    pub arcium_program: Program<'info, Arcium>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_PROCESS_CLAIM))]
+    pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Account<'info, MXEAccount>,
+    /// CHECK: computation_account
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet))]
+    pub cluster_account: Account<'info, Cluster>,
+    #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
+    /// CHECK: instructions_sysvar
+    pub instructions_sysvar: AccountInfo<'info>,
+    #[account(mut)]
+    pub position: Account<'info, VestingPosition>,
+    #[account(mut)]
+    pub claim_authorization: Account<'info, ClaimAuthorization>,
+}
+
+#[derive(Accounts)]
+pub struct InitializeVault<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+
+    #[account(
+        seeds = [Organization::SEED_PREFIX, admin.key().as_ref()],
+        bump = organization.bump,
+        has_one = admin @ ShadowVestError::UnauthorizedAdmin,
+    )]
+    pub organization: Account<'info, Organization>,
+
+    /// CHECK: Vault authority PDA - used as token account authority
+    #[account(
+        seeds = [b"vault_authority", organization.key().as_ref()],
+        bump,
+    )]
+    pub vault_authority: AccountInfo<'info>,
+
+    #[account(
+        init,
+        payer = admin,
+        token::mint = token_mint,
+        token::authority = vault_authority,
+        seeds = [b"vault", organization.key().as_ref()],
+        bump,
+    )]
+    pub vault: Account<'info, TokenAccount>,
+
+    pub token_mint: Account<'info, token::Mint>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct Withdraw<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(
+        seeds = [Organization::SEED_PREFIX, organization.admin.as_ref()],
+        bump = organization.bump,
+    )]
+    pub organization: Account<'info, Organization>,
+
+    #[account(
+        seeds = [VestingPosition::SEED_PREFIX, organization.key().as_ref(), position.position_id.to_le_bytes().as_ref()],
+        bump = position.bump,
+        constraint = position.organization == organization.key() @ ShadowVestError::InvalidPositionOrganization,
+    )]
+    pub position: Account<'info, VestingPosition>,
+
+    #[account(
+        mut,
+        seeds = [ClaimAuthorization::SEED_PREFIX, position.key().as_ref(), claim_authorization.nullifier.as_ref()],
+        bump = claim_authorization.bump,
+        constraint = claim_authorization.position == position.key() @ ShadowVestError::InvalidPositionOrganization,
+    )]
+    pub claim_authorization: Account<'info, ClaimAuthorization>,
+
+    /// CHECK: Vault authority PDA
+    #[account(
+        seeds = [b"vault_authority", organization.key().as_ref()],
+        bump,
+    )]
+    pub vault_authority: AccountInfo<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"vault", organization.key().as_ref()],
+        bump,
+        token::authority = vault_authority,
+    )]
+    pub vault: Account<'info, TokenAccount>,
+
+    #[account(mut)]
+    pub destination: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+// ============================================================
 // Account Contexts - MPC Meta-Keys Vault
 // ============================================================
 
@@ -1674,6 +2201,46 @@ pub struct MetaKeysRetrieved {
     pub encrypted_view_lo: [u8; 32],
     pub encrypted_view_hi: [u8; 32],
     pub nonce: [u8; 16],
+}
+
+// Phase 5: Claim & Withdrawal Events
+
+#[event]
+pub struct ClaimAuthorized {
+    pub position: Pubkey,
+    pub nullifier: [u8; 32],
+    pub withdrawal_destination: Pubkey,
+}
+
+#[event]
+pub struct ClaimProcessQueued {
+    pub position: Pubkey,
+    pub position_id: u64,
+    pub claim_amount: u64,
+    pub computation_offset: u64,
+}
+
+#[event]
+pub struct ClaimProcessed {
+    pub position: Pubkey,
+    pub position_id: u64,
+    pub claim_amount: u64,
+}
+
+#[event]
+pub struct VaultInitialized {
+    pub organization: Pubkey,
+    pub vault: Pubkey,
+    pub vault_authority: Pubkey,
+    pub token_mint: Pubkey,
+}
+
+#[event]
+pub struct ClaimWithdrawn {
+    pub position: Pubkey,
+    pub destination: Pubkey,
+    pub amount: u64,
+    pub token_mint: Pubkey,
 }
 
 // ============================================================
