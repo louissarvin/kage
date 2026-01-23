@@ -4,7 +4,7 @@ import { Program } from "@coral-xyz/anchor";
 import {
   PublicKey,
   Keypair,
-  Transaction,
+  ComputeBudgetProgram,
   Ed25519Program,
   SystemProgram,
   SYSVAR_INSTRUCTIONS_PUBKEY,
@@ -17,28 +17,30 @@ import {
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 import { Contract } from "../target/types/contract";
-import { createHash } from "crypto";
+import { randomBytes, createHash } from "crypto";
 import {
   getArciumEnv,
-  getClusterAccAddress,
+  getCompDefAccOffset,
+  getArciumAccountBaseSeed,
+  getArciumProgramId,
+  RescueCipher,
+  deserializeLE,
   getMXEPublicKey,
   getMXEAccAddress,
   getMempoolAccAddress,
   getCompDefAccAddress,
   getExecutingPoolAccAddress,
   getComputationAccAddress,
-  getClockAccAddress,
+  getClusterAccAddress,
   getFeePoolAccAddress,
-  RescueCipher,
+  getClockAccAddress,
   x25519,
-  awaitComputationFinalization,
 } from "@arcium-hq/client";
-import { expect } from "chai";
-import * as os from "os";
 import * as fs from "fs";
-import nacl from "tweetnacl";
+import * as os from "os";
+import { expect } from "chai";
 
-describe("ShadowVest - Claim & Withdraw", () => {
+describe("ShadowVest - Claim & Withdraw (E2E)", () => {
   anchor.setProvider(anchor.AnchorProvider.env());
   const program = anchor.workspace.Contract as Program<Contract>;
   const provider = anchor.getProvider() as anchor.AnchorProvider;
@@ -54,68 +56,93 @@ describe("ShadowVest - Claim & Withdraw", () => {
   let tokenMint: PublicKey;
   let vaultPda: PublicKey;
   let vaultAuthorityPda: PublicKey;
-  let vaultAuthorityBump: number;
 
-  // Stealth keypair (beneficiary)
-  let stealthKeypair: nacl.SignKeyPair;
-  let beneficiaryCommitment: Uint8Array;
+  // Stealth keypair (beneficiary) - standard Solana Ed25519 keypair
+  let stealthKeypair: Keypair;
+  let beneficiaryCommitment: Uint8Array; // = stealth pubkey bytes
 
   // Claim accounts
   let claimAuthPda: PublicKey;
   let nullifierRecordPda: PublicKey;
-  let nullifier: Uint8Array;
+  let nullifier: Buffer;
   let destinationTokenAccount: PublicKey;
 
-  // Encryption
+  // Encryption for Arcium
   let mxePublicKey: Uint8Array;
   let cipher: RescueCipher;
   let privateKey: Uint8Array;
   let publicKey: Uint8Array;
 
   const nameHash = createHash("sha256").update("ClaimTestOrg").digest();
+  const CLAIM_AMOUNT = BigInt(50_000_000); // 50 tokens (6 decimals)
+  const TOTAL_AMOUNT = BigInt(100_000_000); // 100 tokens
 
   before(async () => {
-    admin = readKpJson(`${os.homedir()}/.config/solana/id.json`);
+    const payer = readKpJson(`${os.homedir()}/.config/solana/id.json`);
 
-    // Generate stealth keypair (Ed25519)
-    stealthKeypair = nacl.sign.keyPair();
-    beneficiaryCommitment = stealthKeypair.publicKey;
+    // Generate a fresh admin keypair to avoid stale org account issues
+    admin = Keypair.generate();
+    console.log("Fresh admin:", admin.publicKey.toString());
 
-    // Derive nullifier: hash(stealth_secret || position_id)
-    const positionId = 0;
-    const nullifierInput = Buffer.concat([
-      Buffer.from(stealthKeypair.publicKey),
-      Buffer.alloc(8), // position_id = 0 as u64 LE
-    ]);
-    nullifier = createHash("sha256").update(nullifierInput).digest();
+    // Fund the fresh admin with SOL from payer
+    const fundTx = new anchor.web3.Transaction().add(
+      anchor.web3.SystemProgram.transfer({
+        fromPubkey: payer.publicKey,
+        toPubkey: admin.publicKey,
+        lamports: 2_000_000_000, // 2 SOL
+      }),
+    );
+    await provider.sendAndConfirm(fundTx, [payer]);
+    console.log("Admin funded with 2 SOL");
 
-    // Setup encryption for Arcium
-    const keyPair = x25519.generateKeyPair();
-    privateKey = keyPair.secretKey;
-    publicKey = keyPair.publicKey;
+    // Generate stealth keypair (Ed25519) for the beneficiary
+    stealthKeypair = Keypair.generate();
+    beneficiaryCommitment = stealthKeypair.publicKey.toBytes();
 
-    mxePublicKey = await getMXEPublicKeyWithRetry(provider, program.programId);
-    const sharedSecret = x25519.sharedKey(privateKey, mxePublicKey);
+    // Derive nullifier: sha256(stealth_pubkey || position_id_as_le_u64)
+    const positionIdBuf = Buffer.alloc(8);
+    positionIdBuf.writeBigUInt64LE(0n);
+    nullifier = createHash("sha256")
+      .update(Buffer.concat([Buffer.from(beneficiaryCommitment), positionIdBuf]))
+      .digest();
+
+    // Setup X25519 encryption for Arcium MPC
+    privateKey = x25519.utils.randomSecretKey();
+    publicKey = x25519.getPublicKey(privateKey);
+
+    mxePublicKey = await getMXEPublicKeyWithRetry(
+      provider,
+      program.programId,
+    );
+    const sharedSecret = x25519.getSharedSecret(privateKey, mxePublicKey);
     cipher = new RescueCipher(sharedSecret);
 
-    // Derive PDAs
+    // Derive organization PDA
     [organizationPda] = PublicKey.findProgramAddressSync(
       [Buffer.from("organization"), admin.publicKey.toBuffer()],
-      program.programId
+      program.programId,
     );
 
-    console.log("Test setup complete");
+    // Initialize computation definitions (needed for fresh deployment)
+    // Use payer wallet since comp defs are per-program, not per-admin
+    console.log("Initializing computation definitions...");
+    await initCompDef(program, payer, "init_position");
+    await initCompDef(program, payer, "process_claim");
+    console.log("Computation definitions ready");
+
+    console.log("Setup complete. Program ID:", program.programId.toString());
   });
 
-  it("Creates organization and schedule", async () => {
-    // Create a real token mint
+  it("Creates organization with real token mint", async () => {
+    // Create a real SPL token mint
     tokenMint = await createMint(
       provider.connection,
       admin,
       admin.publicKey,
       null,
-      6 // 6 decimals
+      6, // 6 decimals
     );
+    console.log("Token mint created:", tokenMint.toString());
 
     const treasury = Keypair.generate().publicKey;
 
@@ -123,7 +150,7 @@ describe("ShadowVest - Claim & Withdraw", () => {
       .createOrganization(
         Array.from(nameHash),
         treasury,
-        tokenMint
+        tokenMint,
       )
       .accounts({
         admin: admin.publicKey,
@@ -131,9 +158,12 @@ describe("ShadowVest - Claim & Withdraw", () => {
         systemProgram: SystemProgram.programId,
       })
       .signers([admin])
-      .rpc();
+      .rpc({ commitment: "confirmed" });
 
-    // Create schedule
+    console.log("Organization created:", organizationPda.toString());
+  });
+
+  it("Creates vesting schedule", async () => {
     const scheduleId = new anchor.BN(0);
     [schedulePda] = PublicKey.findProgramAddressSync(
       [
@@ -141,14 +171,14 @@ describe("ShadowVest - Claim & Withdraw", () => {
         organizationPda.toBuffer(),
         scheduleId.toArrayLike(Buffer, "le", 8),
       ],
-      program.programId
+      program.programId,
     );
 
     await program.methods
       .createVestingSchedule(
-        new anchor.BN(0),           // cliff: 0
+        new anchor.BN(0),           // cliff: 0 (immediate vesting for testing)
         new anchor.BN(31536000),    // duration: 1 year
-        new anchor.BN(2592000)      // interval: 30 days
+        new anchor.BN(2592000),     // interval: 30 days
       )
       .accounts({
         admin: admin.publicKey,
@@ -157,20 +187,20 @@ describe("ShadowVest - Claim & Withdraw", () => {
         systemProgram: SystemProgram.programId,
       })
       .signers([admin])
-      .rpc();
+      .rpc({ commitment: "confirmed" });
 
-    console.log("Organization and schedule created");
+    console.log("Vesting schedule created");
   });
 
-  it("Initializes vault", async () => {
-    [vaultAuthorityPda, vaultAuthorityBump] = PublicKey.findProgramAddressSync(
+  it("Initializes organization vault", async () => {
+    [vaultAuthorityPda] = PublicKey.findProgramAddressSync(
       [Buffer.from("vault_authority"), organizationPda.toBuffer()],
-      program.programId
+      program.programId,
     );
 
     [vaultPda] = PublicKey.findProgramAddressSync(
       [Buffer.from("vault"), organizationPda.toBuffer()],
-      program.programId
+      program.programId,
     );
 
     await program.methods
@@ -186,9 +216,9 @@ describe("ShadowVest - Claim & Withdraw", () => {
         rent: anchor.web3.SYSVAR_RENT_PUBKEY,
       })
       .signers([admin])
-      .rpc();
+      .rpc({ commitment: "confirmed" });
 
-    console.log("Vault initialized:", vaultPda.toBase58());
+    console.log("Vault initialized:", vaultPda.toString());
 
     // Fund the vault with tokens
     await mintTo(
@@ -197,7 +227,7 @@ describe("ShadowVest - Claim & Withdraw", () => {
       tokenMint,
       vaultPda,
       admin, // mint authority
-      1_000_000_000 // 1000 tokens (6 decimals)
+      1_000_000_000, // 1000 tokens
     );
 
     const vaultAccount = await getAccount(provider.connection, vaultPda);
@@ -206,117 +236,136 @@ describe("ShadowVest - Claim & Withdraw", () => {
   });
 
   it("Creates vesting position with stealth beneficiary", async () => {
-    const positionId = new anchor.BN(0);
+    const orgAccount = await program.account.organization.fetch(organizationPda);
+    const positionId = orgAccount.positionCount;
+
     [positionPda] = PublicKey.findProgramAddressSync(
       [
         Buffer.from("vesting_position"),
         organizationPda.toBuffer(),
         positionId.toArrayLike(Buffer, "le", 8),
       ],
-      program.programId
+      program.programId,
     );
 
-    // Encrypt the total amount (100 tokens = 100_000_000 with 6 decimals)
-    const totalAmount = BigInt(100_000_000);
-    const nonce = BigInt(Math.floor(Math.random() * 2 ** 64));
-    const encryptedTotal = cipher.encryptU64(totalAmount);
+    // Encrypt the total amount for Arcium MPC
+    const nonce = randomBytes(16);
+    const ciphertext = cipher.encrypt([TOTAL_AMOUNT], nonce);
+    const nonceAsBN = new anchor.BN(deserializeLE(nonce).toString());
+    const computationOffset = new anchor.BN(randomBytes(8), "hex");
 
-    const computationOffset = new anchor.BN(Date.now());
-    const mxeAccount = getMXEAccAddress(program.programId);
-    const mempoolAccount = getMempoolAccAddress(mxeAccount, arciumEnv.arciumClusterOffset);
-    const executingPool = getExecutingPoolAccAddress(mxeAccount, arciumEnv.arciumClusterOffset);
-    const computationAccount = getComputationAccAddress(computationOffset, mxeAccount, arciumEnv.arciumClusterOffset);
-    const compDefOffset = getCompDefAccOffset("init_position", program.programId);
-    const compDefAccount = getCompDefAccAddress(compDefOffset);
+    const [signPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("ArciumSignerAccount")],
+      program.programId,
+    );
+
+    const modifyComputeUnits = ComputeBudgetProgram.setComputeUnitLimit({
+      units: 1_400_000,
+    });
+    const addPriorityFee = ComputeBudgetProgram.setComputeUnitPrice({
+      microLamports: 1000,
+    });
+
+    const accounts = {
+      payer: admin.publicKey,
+      admin: admin.publicKey,
+      organization: organizationPda,
+      schedule: schedulePda,
+      position: positionPda,
+      signPdaAccount: signPda,
+      mxeAccount: getMXEAccAddress(program.programId),
+      mempoolAccount: getMempoolAccAddress(arciumEnv.arciumClusterOffset),
+      executingPool: getExecutingPoolAccAddress(arciumEnv.arciumClusterOffset),
+      computationAccount: getComputationAccAddress(
+        arciumEnv.arciumClusterOffset,
+        computationOffset,
+      ),
+      compDefAccount: getCompDefAccAddress(
+        program.programId,
+        Buffer.from(getCompDefAccOffset("init_position")).readUInt32LE(),
+      ),
+      clusterAccount,
+      poolAccount: getFeePoolAccAddress(),
+      clockAccount: getClockAccAddress(),
+      systemProgram: SystemProgram.programId,
+      arciumProgram: getArciumProgramId(),
+    };
 
     await program.methods
       .createVestingPosition(
         computationOffset,
-        Array.from(beneficiaryCommitment) as any,
-        Array.from(encryptedTotal) as any,
-        Array.from(publicKey) as any,
-        new anchor.BN(nonce.toString())
+        Array.from(beneficiaryCommitment),
+        Array.from(ciphertext[0]),
+        Array.from(publicKey),
+        nonceAsBN,
       )
-      .accounts({
-        payer: admin.publicKey,
-        admin: admin.publicKey,
-        organization: organizationPda,
-        schedule: schedulePda,
-        position: positionPda,
-        signPdaAccount: PublicKey.findProgramAddressSync(
-          [Buffer.from("ArciumSignerAccount")],
-          program.programId
-        )[0],
-        mxeAccount,
-        mempoolAccount,
-        executingPool,
-        computationAccount,
-        compDefAccount,
-        clusterAccount,
-        poolAccount: getFeePoolAccAddress(),
-        clockAccount: getClockAccAddress(),
-        systemProgram: SystemProgram.programId,
-        arciumProgram: getArciumProgramId(),
-      })
+      .accountsPartial(accounts)
+      .preInstructions([modifyComputeUnits, addPriorityFee])
       .signers([admin])
-      .rpc();
+      .rpc({ commitment: "confirmed" });
 
     console.log("Vesting position created with stealth beneficiary");
+    console.log("  Position PDA:", positionPda.toString());
+    console.log("  Beneficiary (stealth pubkey):", stealthKeypair.publicKey.toString());
+
+    // Wait for init_position MPC callback
+    console.log("Waiting for init_position MPC callback...");
+    await waitForCallback(provider, positionPda, "InitPositionCallback", 300000);
+    console.log("Position initialization complete");
   });
 
-  it("Authorizes claim with Ed25519 signature", async () => {
-    // Create destination token account
+  it("Authorizes claim with Ed25519 stealth signature", async () => {
+    // Create destination token account for withdrawal
+    const destinationOwner = Keypair.generate();
     destinationTokenAccount = await createAccount(
       provider.connection,
       admin,
       tokenMint,
-      Keypair.generate().publicKey // random owner for privacy
+      destinationOwner.publicKey,
     );
+    console.log("Destination token account:", destinationTokenAccount.toString());
 
-    // Derive claim authorization PDA
+    // Derive ClaimAuthorization PDA
     [claimAuthPda] = PublicKey.findProgramAddressSync(
       [
         Buffer.from("claim_auth"),
         positionPda.toBuffer(),
-        Buffer.from(nullifier),
+        nullifier,
       ],
-      program.programId
+      program.programId,
     );
 
-    // Derive nullifier record PDA
+    // Derive NullifierRecord PDA
     [nullifierRecordPda] = PublicKey.findProgramAddressSync(
       [
         Buffer.from("nullifier"),
         organizationPda.toBuffer(),
-        Buffer.from(nullifier),
+        nullifier,
       ],
-      program.programId
+      program.programId,
     );
 
     // Construct the message: position_id(8) || nullifier(32) || withdrawal_destination(32)
-    const positionId = Buffer.alloc(8);
-    positionId.writeBigUInt64LE(0n);
+    const positionIdBuf = Buffer.alloc(8);
+    positionIdBuf.writeBigUInt64LE(0n); // position_id = 0
     const message = Buffer.concat([
-      positionId,
-      Buffer.from(nullifier),
+      positionIdBuf,
+      nullifier,
       destinationTokenAccount.toBuffer(),
     ]);
 
-    // Sign with stealth private key
-    const signature = nacl.sign.detached(message, stealthKeypair.secretKey);
-
-    // Create Ed25519 instruction
-    const ed25519Ix = Ed25519Program.createInstructionWithPublicKey({
-      publicKey: stealthKeypair.publicKey,
-      message,
-      signature,
+    // Create Ed25519 verify instruction using the stealth private key
+    // This signs the message and creates the verification instruction
+    const ed25519Ix = Ed25519Program.createInstructionWithPrivateKey({
+      privateKey: stealthKeypair.secretKey, // First 32 bytes = private key
+      message: Uint8Array.from(message),
     });
 
-    // Create authorize_claim instruction
-    const authorizeTx = await program.methods
+    // Submit authorize_claim with Ed25519 instruction prepended
+    const sig = await program.methods
       .authorizeClaim(
         Array.from(nullifier) as any,
-        destinationTokenAccount
+        destinationTokenAccount,
       )
       .accounts({
         payer: admin.publicKey,
@@ -327,36 +376,50 @@ describe("ShadowVest - Claim & Withdraw", () => {
         instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
         systemProgram: SystemProgram.programId,
       })
-      .signers([admin])
       .preInstructions([ed25519Ix])
-      .rpc();
+      .signers([admin])
+      .rpc({ commitment: "confirmed" });
 
-    console.log("Claim authorized:", authorizeTx);
+    console.log("Claim authorized:", sig);
 
     // Verify claim authorization state
     const claimAuth = await program.account.claimAuthorization.fetch(claimAuthPda);
     expect(claimAuth.isAuthorized).to.be.true;
     expect(claimAuth.isProcessed).to.be.false;
     expect(claimAuth.isWithdrawn).to.be.false;
-    expect(claimAuth.position.toBase58()).to.equal(positionPda.toBase58());
+    expect(claimAuth.position.toString()).to.equal(positionPda.toString());
+    expect(claimAuth.withdrawalDestination.toString()).to.equal(
+      destinationTokenAccount.toString(),
+    );
+    console.log("ClaimAuthorization verified: authorized=true, processed=false");
+
+    // Verify nullifier record exists
+    const nullifierRecord = await program.account.nullifierRecord.fetch(nullifierRecordPda);
+    expect(Buffer.from(nullifierRecord.nullifier)).to.deep.equal(nullifier);
+    console.log("NullifierRecord verified: nullifier stored");
   });
 
-  it("Fails double-claim with same nullifier", async () => {
-    const message = Buffer.alloc(32); // dummy message
-    const signature = nacl.sign.detached(message, stealthKeypair.secretKey);
+  it("Rejects double-claim with same nullifier", async () => {
+    // Try to create another claim with the same nullifier - should fail
+    // because NullifierRecord PDA already exists (init constraint)
+    const positionIdBuf = Buffer.alloc(8);
+    positionIdBuf.writeBigUInt64LE(0n);
+    const message = Buffer.concat([
+      positionIdBuf,
+      nullifier,
+      destinationTokenAccount.toBuffer(),
+    ]);
 
-    const ed25519Ix = Ed25519Program.createInstructionWithPublicKey({
-      publicKey: stealthKeypair.publicKey,
-      message,
-      signature,
+    const ed25519Ix = Ed25519Program.createInstructionWithPrivateKey({
+      privateKey: stealthKeypair.secretKey,
+      message: Uint8Array.from(message),
     });
 
-    // Second claim with same nullifier should fail (init constraint on nullifier_record)
     try {
       await program.methods
         .authorizeClaim(
           Array.from(nullifier) as any,
-          destinationTokenAccount
+          destinationTokenAccount,
         )
         .accounts({
           payer: admin.publicKey,
@@ -367,84 +430,94 @@ describe("ShadowVest - Claim & Withdraw", () => {
           instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
           systemProgram: SystemProgram.programId,
         })
-        .signers([admin])
         .preInstructions([ed25519Ix])
-        .rpc();
+        .signers([admin])
+        .rpc({ commitment: "confirmed" });
 
       expect.fail("Should have thrown - nullifier already used");
     } catch (err: any) {
-      // Expected: account already initialized (nullifier record exists)
-      console.log("Double-claim correctly rejected:", err.message?.substring(0, 80));
+      // Expected: account already initialized
+      console.log("Double-claim correctly rejected:", err.message?.substring(0, 100));
     }
   });
 
   it("Queues process_claim MPC computation", async () => {
-    const claimAmount = BigInt(50_000_000); // 50 tokens
-    const maxClaimable = BigInt(100_000_000); // 100 tokens max
+    const maxClaimable = TOTAL_AMOUNT; // For testing, max claimable = total
+    const claimedSoFar = BigInt(0); // Nothing claimed yet
 
-    // Encrypt values for MPC
-    const encryptedClaimedAmount = cipher.encryptU64(BigInt(0)); // nothing claimed yet
-    const encryptedClaimAmount = cipher.encryptU64(claimAmount);
-    const encryptedMaxClaimable = cipher.encryptU64(maxClaimable);
+    // Encrypt values for MPC (all with same nonce for the circuit)
+    const nonce = randomBytes(16);
+    const nonceAsBN = new anchor.BN(deserializeLE(nonce).toString());
 
-    const computationOffset = new anchor.BN(Date.now());
-    const mxeAccount = getMXEAccAddress(program.programId);
-    const mempoolAccount = getMempoolAccAddress(mxeAccount, arciumEnv.arciumClusterOffset);
-    const executingPool = getExecutingPoolAccAddress(mxeAccount, arciumEnv.arciumClusterOffset);
-    const computationAccount = getComputationAccAddress(computationOffset, mxeAccount, arciumEnv.arciumClusterOffset);
-    const compDefOffset = getCompDefAccOffset("process_claim", program.programId);
-    const compDefAccount = getCompDefAccAddress(compDefOffset);
+    const encryptedClaimedAmount = cipher.encrypt([claimedSoFar], nonce);
+    const encryptedClaimAmount = cipher.encrypt([CLAIM_AMOUNT], nonce);
+    const encryptedMaxClaimable = cipher.encrypt([maxClaimable], nonce);
 
-    const nonce = BigInt(Math.floor(Math.random() * 2 ** 64));
+    const computationOffset = new anchor.BN(randomBytes(8), "hex");
+
+    const [signPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("ArciumSignerAccount")],
+      program.programId,
+    );
+
+    const modifyComputeUnits = ComputeBudgetProgram.setComputeUnitLimit({
+      units: 1_400_000,
+    });
+    const addPriorityFee = ComputeBudgetProgram.setComputeUnitPrice({
+      microLamports: 1000,
+    });
+
+    const accounts = {
+      payer: admin.publicKey,
+      organization: organizationPda,
+      position: positionPda,
+      claimAuthorization: claimAuthPda,
+      signPdaAccount: signPda,
+      mxeAccount: getMXEAccAddress(program.programId),
+      mempoolAccount: getMempoolAccAddress(arciumEnv.arciumClusterOffset),
+      executingPool: getExecutingPoolAccAddress(arciumEnv.arciumClusterOffset),
+      computationAccount: getComputationAccAddress(
+        arciumEnv.arciumClusterOffset,
+        computationOffset,
+      ),
+      compDefAccount: getCompDefAccAddress(
+        program.programId,
+        Buffer.from(getCompDefAccOffset("process_claim")).readUInt32LE(),
+      ),
+      clusterAccount,
+      poolAccount: getFeePoolAccAddress(),
+      clockAccount: getClockAccAddress(),
+      systemProgram: SystemProgram.programId,
+      arciumProgram: getArciumProgramId(),
+    };
 
     await program.methods
       .queueProcessClaim(
         computationOffset,
-        Array.from(encryptedClaimedAmount) as any,
-        Array.from(encryptedClaimAmount) as any,
-        Array.from(encryptedMaxClaimable) as any,
-        new anchor.BN(claimAmount.toString()),
-        Array.from(publicKey) as any,
-        new anchor.BN(nonce.toString())
+        Array.from(encryptedClaimedAmount[0]),
+        Array.from(encryptedClaimAmount[0]),
+        Array.from(encryptedMaxClaimable[0]),
+        new anchor.BN(CLAIM_AMOUNT.toString()),
+        Array.from(publicKey),
+        nonceAsBN,
       )
-      .accounts({
-        payer: admin.publicKey,
-        organization: organizationPda,
-        position: positionPda,
-        claimAuthorization: claimAuthPda,
-        signPdaAccount: PublicKey.findProgramAddressSync(
-          [Buffer.from("ArciumSignerAccount")],
-          program.programId
-        )[0],
-        mxeAccount,
-        mempoolAccount,
-        executingPool,
-        computationAccount,
-        compDefAccount,
-        clusterAccount,
-        poolAccount: getFeePoolAccAddress(),
-        clockAccount: getClockAccAddress(),
-        systemProgram: SystemProgram.programId,
-        arciumProgram: getArciumProgramId(),
-      })
+      .accountsPartial(accounts)
+      .preInstructions([modifyComputeUnits, addPriorityFee])
       .signers([admin])
-      .rpc();
+      .rpc({ commitment: "confirmed" });
 
     console.log("Process claim computation queued");
 
     // Wait for MPC callback
-    console.log("Waiting for MPC computation finalization...");
-    await awaitComputationFinalization(
-      provider.connection,
-      computationAccount,
-      arciumEnv.arciumClusterOffset
-    );
-    console.log("MPC computation finalized");
+    console.log("Waiting for process_claim MPC callback (may take several minutes)...");
+    await waitForCallback(provider, claimAuthPda, "ProcessClaimCallback", 600000);
+    console.log("Process claim callback received");
 
     // Verify claim is now processed
     const claimAuth = await program.account.claimAuthorization.fetch(claimAuthPda);
     expect(claimAuth.isProcessed).to.be.true;
-    expect(claimAuth.claimAmount.toNumber()).to.equal(50_000_000);
+    expect(claimAuth.claimAmount.toNumber()).to.equal(Number(CLAIM_AMOUNT));
+    console.log("ClaimAuthorization verified: processed=true, amount=", claimAuth.claimAmount.toString());
   });
 
   it("Withdraws tokens to destination", async () => {
@@ -453,7 +526,7 @@ describe("ShadowVest - Claim & Withdraw", () => {
 
     await program.methods
       .withdraw()
-      .accounts({
+      .accountsPartial({
         payer: admin.publicKey,
         organization: organizationPda,
         position: positionPda,
@@ -464,23 +537,24 @@ describe("ShadowVest - Claim & Withdraw", () => {
         tokenProgram: TOKEN_PROGRAM_ID,
       })
       .signers([admin])
-      .rpc();
+      .rpc({ commitment: "confirmed" });
 
     // Verify tokens received
     const afterBalance = await getAccount(provider.connection, destinationTokenAccount);
-    expect(Number(afterBalance.amount)).to.equal(50_000_000);
-    console.log("Withdrawal successful: 50 tokens transferred");
+    expect(Number(afterBalance.amount)).to.equal(Number(CLAIM_AMOUNT));
+    console.log(`Withdrawal successful: ${Number(CLAIM_AMOUNT) / 1_000_000} tokens transferred`);
 
     // Verify claim is marked as withdrawn
     const claimAuth = await program.account.claimAuthorization.fetch(claimAuthPda);
     expect(claimAuth.isWithdrawn).to.be.true;
+    console.log("ClaimAuthorization verified: withdrawn=true");
   });
 
-  it("Fails to withdraw twice", async () => {
+  it("Rejects double-withdrawal", async () => {
     try {
       await program.methods
         .withdraw()
-        .accounts({
+        .accountsPartial({
           payer: admin.publicKey,
           organization: organizationPda,
           position: positionPda,
@@ -491,12 +565,12 @@ describe("ShadowVest - Claim & Withdraw", () => {
           tokenProgram: TOKEN_PROGRAM_ID,
         })
         .signers([admin])
-        .rpc();
+        .rpc({ commitment: "confirmed" });
 
       expect.fail("Should have thrown - already withdrawn");
     } catch (err: any) {
-      expect(err.message).to.include("AlreadyWithdrawn");
-      console.log("Double-withdraw correctly rejected");
+      expect(err.message || err.toString()).to.include("AlreadyWithdrawn");
+      console.log("Double-withdrawal correctly rejected");
     }
   });
 });
@@ -506,35 +580,145 @@ describe("ShadowVest - Claim & Withdraw", () => {
 // ============================================================
 
 function readKpJson(path: string): Keypair {
-  const raw = JSON.parse(fs.readFileSync(path, "utf-8"));
-  return Keypair.fromSecretKey(Uint8Array.from(raw));
-}
-
-function getArciumProgramId(): PublicKey {
-  return new PublicKey("ArcmXN9CAkBqvSAoB17dXwrUXFrCeKYeuzVVeMg8HMSi");
-}
-
-function getCompDefAccOffset(circuitName: string, programId: PublicKey): anchor.BN {
-  const seed = Buffer.from(circuitName);
-  const [, bump] = PublicKey.findProgramAddressSync(
-    [Buffer.from("comp_def"), seed],
-    programId
+  const file = fs.readFileSync(path);
+  return Keypair.fromSecretKey(
+    new Uint8Array(JSON.parse(file.toString())),
   );
-  return new anchor.BN(bump);
+}
+
+async function initCompDef(
+  program: Program<Contract>,
+  owner: Keypair,
+  circuitName: string,
+): Promise<string> {
+  const baseSeedCompDefAcc = getArciumAccountBaseSeed(
+    "ComputationDefinitionAccount",
+  );
+  const offset = getCompDefAccOffset(circuitName);
+  const provider = anchor.getProvider();
+
+  const compDefPDA = PublicKey.findProgramAddressSync(
+    [baseSeedCompDefAcc, program.programId.toBuffer(), offset],
+    getArciumProgramId(),
+  )[0];
+
+  console.log(`Comp def PDA for ${circuitName}:`, compDefPDA.toString());
+
+  // Check if already initialized
+  const accountInfo = await provider.connection.getAccountInfo(compDefPDA);
+  if (accountInfo !== null) {
+    console.log(`Comp def for ${circuitName} already exists - ready for use`);
+    return "already_initialized";
+  }
+
+  let sig: string;
+  if (circuitName === "init_position") {
+    sig = await program.methods
+      .initInitPositionCompDef()
+      .accounts({
+        compDefAccount: compDefPDA,
+        payer: owner.publicKey,
+        mxeAccount: getMXEAccAddress(program.programId),
+      })
+      .signers([owner])
+      .rpc({ commitment: "confirmed" });
+  } else if (circuitName === "calculate_vested") {
+    sig = await program.methods
+      .initCalculateVestedCompDef()
+      .accounts({
+        compDefAccount: compDefPDA,
+        payer: owner.publicKey,
+        mxeAccount: getMXEAccAddress(program.programId),
+      })
+      .signers([owner])
+      .rpc({ commitment: "confirmed" });
+  } else if (circuitName === "process_claim") {
+    sig = await program.methods
+      .initProcessClaimCompDef()
+      .accounts({
+        compDefAccount: compDefPDA,
+        payer: owner.publicKey,
+        mxeAccount: getMXEAccAddress(program.programId),
+      })
+      .signers([owner])
+      .rpc({ commitment: "confirmed" });
+  } else {
+    throw new Error(`Unknown circuit name: ${circuitName}`);
+  }
+
+  console.log(`Init ${circuitName} computation definition tx:`, sig);
+  return sig;
 }
 
 async function getMXEPublicKeyWithRetry(
   provider: anchor.AnchorProvider,
   programId: PublicKey,
-  retries = 5
+  maxRetries: number = 20,
+  retryDelayMs: number = 500,
 ): Promise<Uint8Array> {
-  for (let i = 0; i < retries; i++) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      return await getMXEPublicKey(provider.connection, programId);
-    } catch (e) {
-      if (i === retries - 1) throw e;
-      await new Promise((r) => setTimeout(r, 2000));
+      const mxePublicKey = await getMXEPublicKey(provider, programId);
+      if (mxePublicKey) {
+        return mxePublicKey;
+      }
+    } catch (error) {
+      if (attempt === maxRetries) throw error;
+      console.log(`MXE key attempt ${attempt}/${maxRetries} failed, retrying...`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+  }
+  throw new Error(`Failed to fetch MXE public key after ${maxRetries} attempts`);
+}
+
+async function waitForCallback(
+  provider: anchor.AnchorProvider,
+  accountPda: PublicKey,
+  callbackName: string,
+  timeoutMs: number = 300000,
+): Promise<string> {
+  const startTime = Date.now();
+  const pollInterval = 3000;
+  const startSignatures = new Set<string>();
+
+  // Record existing signatures to ignore
+  const existing = await provider.connection.getSignaturesForAddress(
+    accountPda,
+    { limit: 20 },
+    "confirmed",
+  );
+  existing.forEach((s) => startSignatures.add(s.signature));
+
+  while (Date.now() - startTime < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+
+    const signatures = await provider.connection.getSignaturesForAddress(
+      accountPda,
+      { limit: 20 },
+      "confirmed",
+    );
+
+    for (const sigInfo of signatures) {
+      if (startSignatures.has(sigInfo.signature)) continue;
+
+      const tx = await provider.connection.getTransaction(sigInfo.signature, {
+        commitment: "confirmed",
+        maxSupportedTransactionVersion: 0,
+      });
+
+      if (tx?.meta?.logMessages) {
+        const logs = tx.meta.logMessages.join("\n");
+        if (logs.includes(callbackName)) {
+          return sigInfo.signature;
+        }
+      }
+    }
+
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    if (elapsed % 30 === 0) {
+      console.log(`  Still waiting for ${callbackName}... (${elapsed}s elapsed)`);
     }
   }
-  throw new Error("Failed to get MXE public key");
+
+  throw new Error(`Timeout waiting for ${callbackName} after ${timeoutMs / 1000}s`);
 }
