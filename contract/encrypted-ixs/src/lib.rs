@@ -150,24 +150,19 @@ mod circuits {
     /// Each 32-byte key is split into low (bytes 0-15) and high (bytes 16-31) u128 values.
     pub struct MetaKeys {
         /// First 16 bytes of spend private key (meta_spend_priv[0..16])
-        pub spend_lo: u64,
+        pub spend_lo: u128,
         /// Last 16 bytes of spend private key (meta_spend_priv[16..32])
-        pub spend_hi: u64,
+        pub spend_hi: u128,
         /// First 16 bytes of view private key (meta_view_priv[0..16])
-        pub view_lo: u64,
+        pub view_lo: u128,
         /// Last 16 bytes of view private key (meta_view_priv[16..32])
-        pub view_hi: u64,
+        pub view_hi: u128,
     }
 
-    /// Write meta-keys: Convert user's Enc<Shared> to Enc<Mxe> for secure storage.
+    /// Store meta-keys: Convert user's Enc<Shared> to Enc<Mxe> for secure storage.
     /// Only MPC can decrypt the stored data after this operation.
-    ///
-    /// Flow:
-    /// 1. User encrypts their private keys with their x25519 key (Enc<Shared>)
-    /// 2. MPC decrypts and re-encrypts with MXE cluster key (Enc<Mxe>)
-    /// 3. Result is stored on-chain - only MPC can access plaintext
     #[instruction]
-    pub fn write_meta_keys(
+    pub fn store_meta_keys(
         user_input: Enc<Shared, MetaKeys>,
         mxe: Mxe,
     ) -> Enc<Mxe, MetaKeys> {
@@ -175,15 +170,10 @@ mod circuits {
         mxe.from_arcis(keys)
     }
 
-    /// Read meta-keys: Convert stored Enc<Mxe> to Enc<Shared> for user.
+    /// Fetch meta-keys: Convert stored Enc<Mxe> to Enc<Shared> for user.
     /// MPC re-encrypts data specifically for the requesting user.
-    ///
-    /// Flow:
-    /// 1. Stored ciphertexts are encrypted with MXE key
-    /// 2. MPC decrypts with MXE key and re-encrypts for user's x25519 key
-    /// 3. User receives their private keys encrypted only for them
     #[instruction]
-    pub fn read_meta_keys(
+    pub fn fetch_meta_keys(
         requester: Shared,
         stored_keys: Enc<Mxe, MetaKeys>,
     ) -> Enc<Shared, MetaKeys> {

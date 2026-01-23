@@ -29,8 +29,8 @@ use state::{
 const COMP_DEF_OFFSET_INIT_POSITION: u32 = comp_def_offset("init_position");
 const COMP_DEF_OFFSET_CALCULATE_VESTED: u32 = comp_def_offset("calculate_vested");
 const COMP_DEF_OFFSET_PROCESS_CLAIM: u32 = comp_def_offset("process_claim");
-const COMP_DEF_OFFSET_WRITE_META_KEYS: u32 = comp_def_offset("write_meta_keys");
-const COMP_DEF_OFFSET_READ_META_KEYS: u32 = comp_def_offset("read_meta_keys");
+const COMP_DEF_OFFSET_STORE_META_KEYS: u32 = comp_def_offset("store_meta_keys");
+const COMP_DEF_OFFSET_FETCH_META_KEYS: u32 = comp_def_offset("fetch_meta_keys");
 
 declare_id!("3bPHRjdQb1a6uxE5TAVwJRMBCLdjAwsorNKJgwAALGbA");
 
@@ -51,7 +51,7 @@ pub mod contract {
         init_comp_def(
             ctx.accounts,
             Some(CircuitSource::OffChain(OffChainCircuitSource {
-                source: "usingoffchainapproach".to_string(),
+                source: "https://wajsatfcmlfkijmawyuq.supabase.co/storage/v1/object/public/init_position/init_position.arcis".to_string(),
                 hash: circuit_hash!("init_position"),
             })),
             None,
@@ -63,7 +63,7 @@ pub mod contract {
         init_comp_def(
             ctx.accounts,
             Some(CircuitSource::OffChain(OffChainCircuitSource {
-                source: "usingoffchainapproach".to_string(),
+                source: "https://wajsatfcmlfkijmawyuq.supabase.co/storage/v1/object/public/init_position/calculate_vested.arcis".to_string(),
                 hash: circuit_hash!("calculate_vested"),
             })),
             None,
@@ -75,7 +75,7 @@ pub mod contract {
         init_comp_def(
             ctx.accounts,
             Some(CircuitSource::OffChain(OffChainCircuitSource {
-                source: "usingoffchainapproach".to_string(),
+                source: "https://wajsatfcmlfkijmawyuq.supabase.co/storage/v1/object/public/init_position/process_claim.arcis".to_string(),
                 hash: circuit_hash!("process_claim"),
             })),
             None,
@@ -817,26 +817,26 @@ pub mod contract {
     // MPC Meta-Keys Vault (Optional Secure Storage)
     // ============================================================
 
-    /// Initialize MPC computation definition for write_meta_keys
-    pub fn init_write_meta_keys_comp_def(ctx: Context<InitWriteMetaKeysCompDef>) -> Result<()> {
+    /// Initialize MPC computation definition for store_meta_keys
+    pub fn init_store_meta_keys_comp_def(ctx: Context<InitStoreMetaKeysCompDef>) -> Result<()> {
         init_comp_def(
             ctx.accounts,
             Some(CircuitSource::OffChain(OffChainCircuitSource {
-                source: "usingoffchainapproach".to_string(),
-                hash: circuit_hash!("write_meta_keys"),
+                source: "https://wajsatfcmlfkijmawyuq.supabase.co/storage/v1/object/public/init_position/store_meta_keys.arcis".to_string(),
+                hash: circuit_hash!("store_meta_keys"),
             })),
             None,
         )?;
         Ok(())
     }
 
-    /// Initialize MPC computation definition for read_meta_keys
-    pub fn init_read_meta_keys_comp_def(ctx: Context<InitReadMetaKeysCompDef>) -> Result<()> {
+    /// Initialize MPC computation definition for fetch_meta_keys
+    pub fn init_fetch_meta_keys_comp_def(ctx: Context<InitFetchMetaKeysCompDef>) -> Result<()> {
         init_comp_def(
             ctx.accounts,
             Some(CircuitSource::OffChain(OffChainCircuitSource {
-                source: "usingoffchainapproach".to_string(),
-                hash: circuit_hash!("read_meta_keys"),
+                source: "https://wajsatfcmlfkijmawyuq.supabase.co/storage/v1/object/public/init_position/fetch_meta_keys.arcis".to_string(),
+                hash: circuit_hash!("fetch_meta_keys"),
             })),
             None,
         )?;
@@ -855,6 +855,7 @@ pub mod contract {
         encrypted_view_hi: [u8; 32],
         pubkey: [u8; 32],
         nonce: u128,
+        mxe_nonce: u128,
     ) -> Result<()> {
         // Capture keys first before mutable borrow
         let owner_key = ctx.accounts.owner.key();
@@ -878,13 +879,17 @@ pub mod contract {
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
         // Queue MPC computation to re-encrypt with MXE key
+        // Circuit: write_meta_keys(user_input: Enc<Shared, MetaKeys>, mxe: Mxe) -> Enc<Mxe, MetaKeys>
         let args = ArgBuilder::new()
+            // Enc<Shared, MetaKeys> - user's encrypted keys
             .x25519_pubkey(pubkey)
             .plaintext_u128(nonce)
-            .encrypted_u64(encrypted_spend_lo)
-            .encrypted_u64(encrypted_spend_hi)
-            .encrypted_u64(encrypted_view_lo)
-            .encrypted_u64(encrypted_view_hi)
+            .encrypted_u128(encrypted_spend_lo)
+            .encrypted_u128(encrypted_spend_hi)
+            .encrypted_u128(encrypted_view_lo)
+            .encrypted_u128(encrypted_view_hi)
+            // Mxe parameter - nonce for MXE re-encryption
+            .plaintext_u128(mxe_nonce)
             .build();
 
         let vault_callback_account = CallbackAccount {
@@ -892,7 +897,7 @@ pub mod contract {
             is_writable: true,
         };
 
-        let callback_ix = WriteMetaKeysCallback::callback_ix(
+        let callback_ix = StoreMetaKeysCallback::callback_ix(
             computation_offset,
             &ctx.accounts.mxe_account,
             &[vault_callback_account],
@@ -916,10 +921,10 @@ pub mod contract {
         Ok(())
     }
 
-    #[arcium_callback(encrypted_ix = "write_meta_keys")]
-    pub fn write_meta_keys_callback(
-        ctx: Context<WriteMetaKeysCallback>,
-        output: SignedComputationOutputs<WriteMetaKeysOutput>,
+    #[arcium_callback(encrypted_ix = "store_meta_keys")]
+    pub fn store_meta_keys_callback(
+        ctx: Context<StoreMetaKeysCallback>,
+        output: SignedComputationOutputs<StoreMetaKeysOutput>,
     ) -> Result<()> {
         let verified = output
             .verify_output(&ctx.accounts.cluster_account, &ctx.accounts.computation_account)
@@ -927,11 +932,12 @@ pub mod contract {
 
         let vault = &mut ctx.accounts.meta_keys_vault;
 
-        // Store MXE-encrypted ciphertexts
+        // Store MXE-encrypted ciphertexts and nonce
         vault.ciphertexts[0] = verified.field_0.ciphertexts[0];
         vault.ciphertexts[1] = verified.field_0.ciphertexts[1];
         vault.ciphertexts[2] = verified.field_0.ciphertexts[2];
         vault.ciphertexts[3] = verified.field_0.ciphertexts[3];
+        vault.nonce = verified.field_0.nonce;
         vault.is_initialized = true;
 
         emit!(MetaKeysVaultInitialized {
@@ -960,13 +966,16 @@ pub mod contract {
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
         // Queue MPC computation to re-encrypt for user
+        // Circuit: read_meta_keys(requester: Shared, stored_keys: Enc<Mxe, MetaKeys>) -> Enc<Shared, MetaKeys>
+        let vault_key = vault.key();
         let args = ArgBuilder::new()
+            // Shared - requester's x25519 pubkey and nonce
             .x25519_pubkey(pubkey)
             .plaintext_u128(nonce)
-            .encrypted_u64(vault.ciphertexts[0])
-            .encrypted_u64(vault.ciphertexts[1])
-            .encrypted_u64(vault.ciphertexts[2])
-            .encrypted_u64(vault.ciphertexts[3])
+            // Enc<Mxe, MetaKeys> - nonce + account data
+            // Account layout: 8 (discriminator) + 32 (owner) + 128 (ciphertexts)
+            .plaintext_u128(vault.nonce)
+            .account(vault_key, 40, 128) // Skip discriminator + owner, read 4 x 32 bytes ciphertexts
             .build();
 
         let vault_callback_account = CallbackAccount {
@@ -979,7 +988,7 @@ pub mod contract {
             computation_offset,
             args,
             None,
-            vec![ReadMetaKeysCallback::callback_ix(
+            vec![FetchMetaKeysCallback::callback_ix(
                 computation_offset,
                 &ctx.accounts.mxe_account,
                 &[vault_callback_account],
@@ -997,10 +1006,10 @@ pub mod contract {
         Ok(())
     }
 
-    #[arcium_callback(encrypted_ix = "read_meta_keys")]
-    pub fn read_meta_keys_callback(
-        ctx: Context<ReadMetaKeysCallback>,
-        output: SignedComputationOutputs<ReadMetaKeysOutput>,
+    #[arcium_callback(encrypted_ix = "fetch_meta_keys")]
+    pub fn fetch_meta_keys_callback(
+        ctx: Context<FetchMetaKeysCallback>,
+        output: SignedComputationOutputs<FetchMetaKeysOutput>,
     ) -> Result<()> {
         let verified = output
             .verify_output(&ctx.accounts.cluster_account, &ctx.accounts.computation_account)
@@ -1382,9 +1391,9 @@ pub struct DeactivateStealthMeta<'info> {
 // Account Contexts - MPC Meta-Keys Vault
 // ============================================================
 
-#[init_computation_definition_accounts("write_meta_keys", payer)]
+#[init_computation_definition_accounts("store_meta_keys", payer)]
 #[derive(Accounts)]
-pub struct InitWriteMetaKeysCompDef<'info> {
+pub struct InitStoreMetaKeysCompDef<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     #[account(mut, address = derive_mxe_pda!())]
@@ -1396,9 +1405,9 @@ pub struct InitWriteMetaKeysCompDef<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[init_computation_definition_accounts("read_meta_keys", payer)]
+#[init_computation_definition_accounts("fetch_meta_keys", payer)]
 #[derive(Accounts)]
-pub struct InitReadMetaKeysCompDef<'info> {
+pub struct InitFetchMetaKeysCompDef<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     #[account(mut, address = derive_mxe_pda!())]
@@ -1410,7 +1419,7 @@ pub struct InitReadMetaKeysCompDef<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[queue_computation_accounts("write_meta_keys", payer)]
+#[queue_computation_accounts("store_meta_keys", payer)]
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
 pub struct WriteMetaKeysToVault<'info> {
@@ -1419,7 +1428,7 @@ pub struct WriteMetaKeysToVault<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
     #[account(
-        init,
+        init_if_needed,
         payer = payer,
         space = MetaKeysVault::SIZE,
         seeds = [MetaKeysVault::SEED_PREFIX, owner.key().as_ref()],
@@ -1445,7 +1454,7 @@ pub struct WriteMetaKeysToVault<'info> {
     #[account(mut, address = derive_comp_pda!(computation_offset, mxe_account, ErrorCode::ClusterNotSet))]
     /// CHECK: computation_account
     pub computation_account: UncheckedAccount<'info>,
-    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_WRITE_META_KEYS))]
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_STORE_META_KEYS))]
     pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
     #[account(mut, address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet))]
     pub cluster_account: Box<Account<'info, Cluster>>,
@@ -1457,12 +1466,12 @@ pub struct WriteMetaKeysToVault<'info> {
     pub arcium_program: Program<'info, Arcium>,
 }
 
-#[callback_accounts("write_meta_keys")]
+#[callback_accounts("store_meta_keys")]
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
-pub struct WriteMetaKeysCallback<'info> {
+pub struct StoreMetaKeysCallback<'info> {
     pub arcium_program: Program<'info, Arcium>,
-    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_WRITE_META_KEYS))]
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_STORE_META_KEYS))]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
     #[account(address = derive_mxe_pda!())]
     pub mxe_account: Account<'info, MXEAccount>,
@@ -1477,7 +1486,7 @@ pub struct WriteMetaKeysCallback<'info> {
     pub meta_keys_vault: Account<'info, MetaKeysVault>,
 }
 
-#[queue_computation_accounts("read_meta_keys", payer)]
+#[queue_computation_accounts("fetch_meta_keys", payer)]
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
 pub struct ReadMetaKeysFromVault<'info> {
@@ -1509,7 +1518,7 @@ pub struct ReadMetaKeysFromVault<'info> {
     #[account(mut, address = derive_comp_pda!(computation_offset, mxe_account, ErrorCode::ClusterNotSet))]
     /// CHECK: computation_account
     pub computation_account: UncheckedAccount<'info>,
-    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_READ_META_KEYS))]
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_FETCH_META_KEYS))]
     pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
     #[account(mut, address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet))]
     pub cluster_account: Box<Account<'info, Cluster>>,
@@ -1521,12 +1530,12 @@ pub struct ReadMetaKeysFromVault<'info> {
     pub arcium_program: Program<'info, Arcium>,
 }
 
-#[callback_accounts("read_meta_keys")]
+#[callback_accounts("fetch_meta_keys")]
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
-pub struct ReadMetaKeysCallback<'info> {
+pub struct FetchMetaKeysCallback<'info> {
     pub arcium_program: Program<'info, Arcium>,
-    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_READ_META_KEYS))]
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_FETCH_META_KEYS))]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
     #[account(address = derive_mxe_pda!())]
     pub mxe_account: Account<'info, MXEAccount>,
