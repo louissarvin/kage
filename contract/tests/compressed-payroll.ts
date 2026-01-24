@@ -94,8 +94,9 @@ describe("Compressed Payroll Distribution", () => {
   });
 
   describe("Payroll Distribution (Integration)", () => {
-    // Skip actual network tests unless explicitly enabled
-    const runIntegrationTests = process.env.RUN_INTEGRATION_TESTS === "true";
+    // Skip actual network tests unless explicitly enabled AND a real mint is provided
+    const runIntegrationTests =
+      process.env.RUN_INTEGRATION_TESTS === "true" && !!process.env.TEST_MINT;
 
     it("should prepare valid payroll configuration", () => {
       const payrollRecipients: PayrollRecipient[] = recipients.map(
@@ -179,7 +180,8 @@ describe("Compressed Payroll Distribution", () => {
   });
 
   describe("Token Decompression (Integration)", () => {
-    const runIntegrationTests = process.env.RUN_INTEGRATION_TESTS === "true";
+    const runIntegrationTests =
+      process.env.RUN_INTEGRATION_TESTS === "true" && !!process.env.TEST_MINT;
 
     (runIntegrationTests ? it : it.skip)(
       "should decompress tokens to regular SPL",

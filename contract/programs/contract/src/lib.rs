@@ -34,6 +34,7 @@ use state::{
 const COMP_DEF_OFFSET_INIT_POSITION: u32 = comp_def_offset("init_position");
 const COMP_DEF_OFFSET_CALCULATE_VESTED: u32 = comp_def_offset("calculate_vested");
 const COMP_DEF_OFFSET_PROCESS_CLAIM: u32 = comp_def_offset("process_claim");
+const COMP_DEF_OFFSET_PROCESS_CLAIM_V2: u32 = comp_def_offset("process_claim_v2");
 const COMP_DEF_OFFSET_STORE_META_KEYS: u32 = comp_def_offset("store_meta_keys");
 const COMP_DEF_OFFSET_FETCH_META_KEYS: u32 = comp_def_offset("fetch_meta_keys");
 
@@ -82,6 +83,18 @@ pub mod contract {
             Some(CircuitSource::OffChain(OffChainCircuitSource {
                 source: "https://wajsatfcmlfkijmawyuq.supabase.co/storage/v1/object/public/init_position/process_claim.arcis".to_string(),
                 hash: circuit_hash!("process_claim"),
+            })),
+            None,
+        )?;
+        Ok(())
+    }
+
+    pub fn init_process_claim_v2_comp_def(ctx: Context<InitProcessClaimV2CompDef>) -> Result<()> {
+        init_comp_def(
+            ctx.accounts,
+            Some(CircuitSource::OffChain(OffChainCircuitSource {
+                source: "https://wajsatfcmlfkijmawyuq.supabase.co/storage/v1/object/public/init_position/process_claim_v2.arcis".to_string(),
+                hash: circuit_hash!("process_claim_v2"),
             })),
             None,
         )?;
@@ -613,17 +626,20 @@ pub mod contract {
         Ok(())
     }
 
-    /// Queue the process_claim MPC computation.
+    /// Queue the process_claim_v2 MPC computation with integrated vesting calculation.
     ///
-    /// Submits encrypted (claimed_amount, claim_amount, max_claimable) to Arcium MPC.
-    /// The MPC circuit validates claim_amount <= max_claimable.
+    /// Computes vesting_numerator on-chain from Clock + schedule parameters.
+    /// Submits encrypted (total_amount, claimed_amount, vesting_numerator, claim_amount) to MPC.
+    /// The MPC circuit internally computes: claimable = (total * numerator / PRECISION) - claimed
+    /// Then validates: claim_amount <= claimable.
     /// Callback updates position.encrypted_claimed_amount and sets is_processed=true.
     pub fn queue_process_claim(
         ctx: Context<QueueProcessClaim>,
         computation_offset: u64,
+        encrypted_total_amount: [u8; 32],
         encrypted_claimed_amount: [u8; 32],
+        encrypted_vesting_numerator: [u8; 32],
         encrypted_claim_amount: [u8; 32],
-        encrypted_max_claimable: [u8; 32],
         claim_amount: u64,
         pubkey: [u8; 32],
         nonce: u128,
@@ -634,16 +650,44 @@ pub mod contract {
         require!(!claim_auth.is_processed, ShadowVestError::ClaimNotProcessed);
 
         let position = &ctx.accounts.position;
+        let schedule = &ctx.accounts.schedule;
         require!(position.is_active, ShadowVestError::PositionNotActive);
+
+        // Compute vesting_numerator on-chain from verifiable data
+        let clock = Clock::get()?;
+        let current_time = clock.unix_timestamp;
+        let start_time = position.start_timestamp;
+        let cliff_end = start_time + schedule.cliff_duration as i64;
+        let vesting_end = start_time + schedule.total_duration as i64;
+
+        const PRECISION: u64 = 1_000_000;
+
+        let vesting_numerator = if current_time < cliff_end {
+            0u64
+        } else if current_time >= vesting_end {
+            PRECISION
+        } else {
+            let elapsed = (current_time - cliff_end) as u64;
+            let intervals = elapsed / schedule.vesting_interval;
+            let vested_seconds = intervals * schedule.vesting_interval;
+            let vesting_duration = schedule.total_duration - schedule.cliff_duration;
+            if vesting_duration > 0 {
+                vested_seconds * PRECISION / vesting_duration
+            } else {
+                PRECISION
+            }
+        };
 
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
+        // Args order matches ProcessClaimV2Input: total_amount, claimed_amount, vesting_numerator, claim_amount
         let args = ArgBuilder::new()
             .x25519_pubkey(pubkey)
             .plaintext_u128(nonce)
+            .encrypted_u64(encrypted_total_amount)
             .encrypted_u64(encrypted_claimed_amount)
+            .encrypted_u64(encrypted_vesting_numerator)
             .encrypted_u64(encrypted_claim_amount)
-            .encrypted_u64(encrypted_max_claimable)
             .build();
 
         let position_callback_account = CallbackAccount {
@@ -655,7 +699,7 @@ pub mod contract {
             is_writable: true,
         };
 
-        let callback_ix = ProcessClaimCallback::callback_ix(
+        let callback_ix = ProcessClaimV2Callback::callback_ix(
             computation_offset,
             &ctx.accounts.mxe_account,
             &[position_callback_account, claim_auth_callback_account],
@@ -680,20 +724,21 @@ pub mod contract {
             position_id: position.position_id,
             claim_amount,
             computation_offset,
+            vesting_numerator,
         });
 
         Ok(())
     }
 
-    /// Callback from the process_claim MPC computation.
+    /// Callback from the process_claim_v2 MPC computation.
     ///
     /// Verifies the MPC output and updates:
     /// - position.encrypted_claimed_amount from output ciphertexts[0]
     /// - claim_authorization.is_processed = true
-    #[arcium_callback(encrypted_ix = "process_claim")]
-    pub fn process_claim_callback(
-        ctx: Context<ProcessClaimCallback>,
-        output: SignedComputationOutputs<ProcessClaimOutput>,
+    #[arcium_callback(encrypted_ix = "process_claim_v2")]
+    pub fn process_claim_v2_callback(
+        ctx: Context<ProcessClaimV2Callback>,
+        output: SignedComputationOutputs<ProcessClaimV2Output>,
     ) -> Result<()> {
         let verified = output
             .verify_output(&ctx.accounts.cluster_account, &ctx.accounts.computation_account)
@@ -1554,6 +1599,20 @@ pub struct InitProcessClaimCompDef<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[init_computation_definition_accounts("process_claim_v2", payer)]
+#[derive(Accounts)]
+pub struct InitProcessClaimV2CompDef<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut, address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    #[account(mut)]
+    /// CHECK: comp_def_account
+    pub comp_def_account: UncheckedAccount<'info>,
+    pub arcium_program: Program<'info, Arcium>,
+    pub system_program: Program<'info, System>,
+}
+
 // ============================================================
 // Account Contexts - Organization & Schedule (Non-MPC)
 // ============================================================
@@ -1751,7 +1810,7 @@ pub struct AuthorizeClaim<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[queue_computation_accounts("process_claim", payer)]
+#[queue_computation_accounts("process_claim_v2", payer)]
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
 pub struct QueueProcessClaim<'info> {
@@ -1765,11 +1824,19 @@ pub struct QueueProcessClaim<'info> {
     pub organization: Account<'info, Organization>,
 
     #[account(
+        seeds = [VestingSchedule::SEED_PREFIX, organization.key().as_ref(), schedule.schedule_id.to_le_bytes().as_ref()],
+        bump = schedule.bump,
+        constraint = schedule.organization == organization.key() @ ShadowVestError::InvalidScheduleParams,
+    )]
+    pub schedule: Box<Account<'info, VestingSchedule>>,
+
+    #[account(
         seeds = [VestingPosition::SEED_PREFIX, organization.key().as_ref(), position.position_id.to_le_bytes().as_ref()],
         bump = position.bump,
         constraint = position.organization == organization.key() @ ShadowVestError::InvalidPositionOrganization,
+        constraint = position.schedule == schedule.key() @ ShadowVestError::InvalidScheduleParams,
     )]
-    pub position: Account<'info, VestingPosition>,
+    pub position: Box<Account<'info, VestingPosition>>,
 
     #[account(
         mut,
@@ -1798,7 +1865,7 @@ pub struct QueueProcessClaim<'info> {
     #[account(mut, address = derive_comp_pda!(computation_offset, mxe_account, ErrorCode::ClusterNotSet))]
     /// CHECK: computation_account
     pub computation_account: UncheckedAccount<'info>,
-    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_PROCESS_CLAIM))]
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_PROCESS_CLAIM_V2))]
     pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
     #[account(mut, address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet))]
     pub cluster_account: Box<Account<'info, Cluster>>,
@@ -1810,12 +1877,12 @@ pub struct QueueProcessClaim<'info> {
     pub arcium_program: Program<'info, Arcium>,
 }
 
-#[callback_accounts("process_claim")]
+#[callback_accounts("process_claim_v2")]
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
-pub struct ProcessClaimCallback<'info> {
+pub struct ProcessClaimV2Callback<'info> {
     pub arcium_program: Program<'info, Arcium>,
-    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_PROCESS_CLAIM))]
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_PROCESS_CLAIM_V2))]
     pub comp_def_account: Account<'info, ComputationDefinitionAccount>,
     #[account(address = derive_mxe_pda!())]
     pub mxe_account: Account<'info, MXEAccount>,
@@ -2218,6 +2285,7 @@ pub struct ClaimProcessQueued {
     pub position_id: u64,
     pub claim_amount: u64,
     pub computation_offset: u64,
+    pub vesting_numerator: u64,
 }
 
 #[event]

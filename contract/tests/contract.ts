@@ -55,7 +55,22 @@ describe("ShadowVest", () => {
   const beneficiaryCommitment = createHash("sha256").update("employee123").digest();
 
   before(async () => {
-    admin = readKpJson(`${os.homedir()}/.config/solana/id.json`);
+    const payer = readKpJson(`${os.homedir()}/.config/solana/id.json`);
+
+    // Generate a fresh admin keypair to avoid stale account issues
+    admin = Keypair.generate();
+    console.log("Fresh admin:", admin.publicKey.toString());
+
+    // Fund the fresh admin with SOL from payer
+    const fundTx = new anchor.web3.Transaction().add(
+      anchor.web3.SystemProgram.transfer({
+        fromPubkey: payer.publicKey,
+        toPubkey: admin.publicKey,
+        lamports: 2_000_000_000, // 2 SOL
+      }),
+    );
+    await (provider as anchor.AnchorProvider).sendAndConfirm(fundTx, [payer]);
+    console.log("Admin funded with 2 SOL");
 
     // Initialize computation definitions
     console.log("Initializing computation definitions...");
@@ -63,12 +78,8 @@ describe("ShadowVest", () => {
     await initCompDef(program, admin, "init_position");
     console.log("init_position computation definition initialized");
 
-    // Initialize calculate_vested comp def (optimized circuit: 1.3MB)
     await initCompDef(program, admin, "calculate_vested");
     console.log("calculate_vested computation definition initialized");
-
-    // process_claim can be enabled later if needed
-    // await initCompDef(program, admin, "process_claim");
 
     // Get MXE public key for encryption
     mxePublicKey = await getMXEPublicKeyWithRetry(
@@ -91,16 +102,6 @@ describe("ShadowVest", () => {
   });
 
   it("Creates an organization", async () => {
-    // Check if organization already exists
-    const existingOrg = await provider.connection.getAccountInfo(organizationPda);
-    if (existingOrg !== null) {
-      console.log("Organization already exists, verifying state...");
-      const orgAccount = await program.account.organization.fetch(organizationPda);
-      expect(orgAccount.admin.toString()).to.equal(admin.publicKey.toString());
-      expect(orgAccount.isActive).to.equal(true);
-      return;
-    }
-
     const sig = await program.methods
       .createOrganization(
         Array.from(nameHash),
@@ -128,8 +129,6 @@ describe("ShadowVest", () => {
   });
 
   it("Creates a vesting schedule", async () => {
-    const orgAccount = await program.account.organization.fetch(organizationPda);
-
     // Use schedule ID 0 (first schedule)
     const scheduleId = new anchor.BN(0);
 
@@ -141,16 +140,6 @@ describe("ShadowVest", () => {
       ],
       program.programId,
     );
-
-    // Check if schedule already exists
-    const existingSchedule = await provider.connection.getAccountInfo(schedulePda);
-    if (existingSchedule !== null) {
-      console.log("Vesting schedule already exists, verifying state...");
-      const scheduleAccount = await program.account.vestingSchedule.fetch(schedulePda);
-      expect(scheduleAccount.organization.toString()).to.equal(organizationPda.toString());
-      expect(scheduleAccount.isActive).to.equal(true);
-      return;
-    }
 
     const cliffDuration = new anchor.BN(30 * 24 * 60 * 60); // 30 days in seconds
     const totalDuration = new anchor.BN(365 * 24 * 60 * 60); // 1 year in seconds
@@ -284,14 +273,19 @@ describe("ShadowVest", () => {
     expect(updatedOrg.positionCount.toNumber()).to.equal(positionId.toNumber() + 1);
 
     // Wait for MPC computation to finalize (this updates encrypted amounts)
-    console.log("Waiting for MPC computation to finalize...");
-    const finalizeSig = await waitForPositionEncryption(
+    console.log("Waiting for init_position MPC callback...");
+    await waitForAccountState(
       provider as anchor.AnchorProvider,
       program,
       positionPda,
-      60000, // 60 second timeout
+      "vestingPosition",
+      (account: any) => {
+        // init_position callback sets encrypted_claimed_amount (ciphertext of 0 - non-zero bytes)
+        return account.encryptedClaimedAmount.some((b: number) => b !== 0);
+      },
+      120000, // 2 minute timeout
     );
-    console.log("Position computation finalized:", finalizeSig);
+    console.log("Position init_position callback received");
   });
 
   it("Calculates vested amount", async () => {
@@ -414,13 +408,14 @@ describe("ShadowVest", () => {
 
     console.log("Calculate vested amount signature:", sig);
 
-    // Wait for MPC computation to finalize using custom polling
-    // Note: MPC on devnet can take several minutes for larger circuits
-    console.log("Waiting for vested calculation MPC to finalize (up to 5 min)...");
-    const finalizeSig = await waitForCalculateVestedCallback(
+    // Wait for MPC computation to finalize using Arcium SDK event listener
+    // Note: calculate_vested callback emits VestedAmountCalculated event but doesn't modify position
+    // So we use awaitComputationFinalization which listens for the Arcium finalizeComputationEvent
+    console.log("Waiting for calculate_vested MPC finalization (up to 10 min)...");
+    const finalizeSig = await awaitComputationFinalization(
       provider as anchor.AnchorProvider,
-      positionPda,
-      300000, // 5 minute timeout
+      computationOffset,
+      program.programId,
     );
     console.log("Vested calculation finalized:", finalizeSig);
   });
@@ -536,147 +531,35 @@ function readKpJson(path: string): Keypair {
   );
 }
 
-// Custom polling function that checks for callback transaction on the position account
-async function waitForPositionEncryption(
+// Poll account state directly instead of searching for transaction signatures
+async function waitForAccountState(
   provider: anchor.AnchorProvider,
   program: Program<Contract>,
-  positionPda: PublicKey,
-  timeoutMs: number = 60000,
-): Promise<string> {
+  accountPda: PublicKey,
+  accountName: string,
+  predicate: (account: any) => boolean,
+  timeoutMs: number = 300000,
+): Promise<void> {
   const startTime = Date.now();
-  const pollInterval = 2000; // Poll every 2 seconds
-  let lastSignature: string | undefined;
+  const pollInterval = 3000;
 
   while (Date.now() - startTime < timeoutMs) {
-    try {
-      // Get recent transaction signatures for the position account
-      const signatures = await provider.connection.getSignaturesForAddress(
-        positionPda,
-        { limit: 10 },
-        "confirmed",
-      );
-
-      // Look for a transaction that's newer than our start and contains callback
-      for (const sigInfo of signatures) {
-        if (sigInfo.signature === lastSignature) continue;
-
-        // Get transaction details to check for callback
-        const tx = await provider.connection.getTransaction(sigInfo.signature, {
-          commitment: "confirmed",
-          maxSupportedTransactionVersion: 0,
-        });
-
-        if (tx?.meta?.logMessages) {
-          const logs = tx.meta.logMessages.join("\n");
-          if (logs.includes("InitPositionCallback")) {
-            // Found the callback transaction
-            return sigInfo.signature;
-          }
-        }
-      }
-
-      // Track last checked signature to avoid re-checking
-      if (signatures.length > 0) {
-        lastSignature = signatures[0].signature;
-      }
-    } catch (error) {
-      // Ignore errors and continue polling
-    }
-
     await new Promise((resolve) => setTimeout(resolve, pollInterval));
-    process.stdout.write(".");
-  }
 
-  // If we timeout, check if the position was already updated (callback might have happened before we started watching)
-  try {
-    const signatures = await provider.connection.getSignaturesForAddress(
-      positionPda,
-      { limit: 20 },
-      "confirmed",
-    );
-
-    for (const sigInfo of signatures) {
-      const tx = await provider.connection.getTransaction(sigInfo.signature, {
-        commitment: "confirmed",
-        maxSupportedTransactionVersion: 0,
-      });
-
-      if (tx?.meta?.logMessages) {
-        const logs = tx.meta.logMessages.join("\n");
-        if (logs.includes("InitPositionCallback")) {
-          return sigInfo.signature;
-        }
-      }
-    }
-  } catch (error) {
-    // Ignore
-  }
-
-  throw new Error(`Timeout waiting for position encryption callback after ${timeoutMs}ms`);
-}
-
-// Custom polling function for calculate_vested callback
-async function waitForCalculateVestedCallback(
-  provider: anchor.AnchorProvider,
-  positionPda: PublicKey,
-  timeoutMs: number = 60000,
-): Promise<string> {
-  const startTime = Date.now();
-  const pollInterval = 2000;
-
-  while (Date.now() - startTime < timeoutMs) {
     try {
-      const signatures = await provider.connection.getSignaturesForAddress(
-        positionPda,
-        { limit: 10 },
-        "confirmed",
-      );
-
-      for (const sigInfo of signatures) {
-        const tx = await provider.connection.getTransaction(sigInfo.signature, {
-          commitment: "confirmed",
-          maxSupportedTransactionVersion: 0,
-        });
-
-        if (tx?.meta?.logMessages) {
-          const logs = tx.meta.logMessages.join("\n");
-          if (logs.includes("CalculateVestedCallback")) {
-            return sigInfo.signature;
-          }
-        }
+      const account = await (program.account as any)[accountName].fetch(accountPda);
+      if (predicate(account)) {
+        return;
       }
-    } catch (error) {
-      // Ignore errors and continue polling
+    } catch (err) {
+      // Account might not exist yet or be in transition
     }
 
-    await new Promise((resolve) => setTimeout(resolve, pollInterval));
-    process.stdout.write(".");
-  }
-
-  // Final check before timeout
-  try {
-    const signatures = await provider.connection.getSignaturesForAddress(
-      positionPda,
-      { limit: 20 },
-      "confirmed",
-    );
-
-    for (const sigInfo of signatures) {
-      const tx = await provider.connection.getTransaction(sigInfo.signature, {
-        commitment: "confirmed",
-        maxSupportedTransactionVersion: 0,
-      });
-
-      if (tx?.meta?.logMessages) {
-        const logs = tx.meta.logMessages.join("\n");
-        if (logs.includes("CalculateVestedCallback")) {
-          return sigInfo.signature;
-        }
-      }
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    if (elapsed % 30 === 0 && elapsed > 0) {
+      console.log(`  Still waiting for ${accountName} state change... (${elapsed}s elapsed)`);
     }
-  } catch (error) {
-    // Ignore
   }
 
-  throw new Error(`Timeout waiting for calculate_vested callback after ${timeoutMs}ms`);
+  throw new Error(`Timeout waiting for ${accountName} state change after ${timeoutMs / 1000}s`);
 }

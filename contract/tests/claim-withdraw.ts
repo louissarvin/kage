@@ -127,7 +127,7 @@ describe("ShadowVest - Claim & Withdraw (E2E)", () => {
     // Use payer wallet since comp defs are per-program, not per-admin
     console.log("Initializing computation definitions...");
     await initCompDef(program, payer, "init_position");
-    await initCompDef(program, payer, "process_claim");
+    await initCompDef(program, payer, "process_claim_v2");
     console.log("Computation definitions ready");
 
     console.log("Setup complete. Program ID:", program.programId.toString());
@@ -177,8 +177,8 @@ describe("ShadowVest - Claim & Withdraw (E2E)", () => {
     await program.methods
       .createVestingSchedule(
         new anchor.BN(0),           // cliff: 0 (immediate vesting for testing)
-        new anchor.BN(31536000),    // duration: 1 year
-        new anchor.BN(2592000),     // interval: 30 days
+        new anchor.BN(10),          // duration: 10 seconds (fully vested before MPC callback)
+        new anchor.BN(1),           // interval: 1 second
       )
       .accounts({
         admin: admin.publicKey,
@@ -308,9 +308,19 @@ describe("ShadowVest - Claim & Withdraw (E2E)", () => {
     console.log("  Position PDA:", positionPda.toString());
     console.log("  Beneficiary (stealth pubkey):", stealthKeypair.publicKey.toString());
 
-    // Wait for init_position MPC callback
+    // Wait for init_position MPC callback by polling position state
+    // encrypted_claimed_amount starts as all-zeros, callback sets it to encrypted(0) ciphertext
     console.log("Waiting for init_position MPC callback...");
-    await waitForCallback(provider, positionPda, "InitPositionCallback", 300000);
+    await waitForAccountState(
+      provider,
+      program,
+      positionPda,
+      "vestingPosition",
+      (account: any) => {
+        return account.encryptedClaimedAmount.some((b: number) => b !== 0);
+      },
+      300000,
+    );
     console.log("Position initialization complete");
   });
 
@@ -441,17 +451,26 @@ describe("ShadowVest - Claim & Withdraw (E2E)", () => {
     }
   });
 
-  it("Queues process_claim MPC computation", async () => {
-    const maxClaimable = TOTAL_AMOUNT; // For testing, max claimable = total
+  it("Queues process_claim MPC computation (integrated vesting)", async () => {
     const claimedSoFar = BigInt(0); // Nothing claimed yet
 
+    // With cliff=0, duration=10s, interval=1s, and >10s elapsed (MPC wait) → fully vested
+    // vesting_numerator = PRECISION = 1_000_000
+    // MPC computes: vested = total * numerator / PRECISION = 100_000_000
+    // claimable = vested - claimed = 100_000_000 - 0 = 100_000_000
+    // claim_amount(50_000_000) <= claimable(100_000_000) → valid
+    const PRECISION = BigInt(1_000_000);
+    const vestingNumerator = PRECISION; // Fully vested
+
     // Encrypt values for MPC (all with same nonce for the circuit)
+    // Args order matches ProcessClaimV2Input: total_amount, claimed_amount, vesting_numerator, claim_amount
     const nonce = randomBytes(16);
     const nonceAsBN = new anchor.BN(deserializeLE(nonce).toString());
 
+    const encryptedTotalAmount = cipher.encrypt([TOTAL_AMOUNT], nonce);
     const encryptedClaimedAmount = cipher.encrypt([claimedSoFar], nonce);
+    const encryptedVestingNumerator = cipher.encrypt([vestingNumerator], nonce);
     const encryptedClaimAmount = cipher.encrypt([CLAIM_AMOUNT], nonce);
-    const encryptedMaxClaimable = cipher.encrypt([maxClaimable], nonce);
 
     const computationOffset = new anchor.BN(randomBytes(8), "hex");
 
@@ -470,6 +489,7 @@ describe("ShadowVest - Claim & Withdraw (E2E)", () => {
     const accounts = {
       payer: admin.publicKey,
       organization: organizationPda,
+      schedule: schedulePda,
       position: positionPda,
       claimAuthorization: claimAuthPda,
       signPdaAccount: signPda,
@@ -482,7 +502,7 @@ describe("ShadowVest - Claim & Withdraw (E2E)", () => {
       ),
       compDefAccount: getCompDefAccAddress(
         program.programId,
-        Buffer.from(getCompDefAccOffset("process_claim")).readUInt32LE(),
+        Buffer.from(getCompDefAccOffset("process_claim_v2")).readUInt32LE(),
       ),
       clusterAccount,
       poolAccount: getFeePoolAccAddress(),
@@ -494,9 +514,10 @@ describe("ShadowVest - Claim & Withdraw (E2E)", () => {
     await program.methods
       .queueProcessClaim(
         computationOffset,
+        Array.from(encryptedTotalAmount[0]),
         Array.from(encryptedClaimedAmount[0]),
+        Array.from(encryptedVestingNumerator[0]),
         Array.from(encryptedClaimAmount[0]),
-        Array.from(encryptedMaxClaimable[0]),
         new anchor.BN(CLAIM_AMOUNT.toString()),
         Array.from(publicKey),
         nonceAsBN,
@@ -506,11 +527,20 @@ describe("ShadowVest - Claim & Withdraw (E2E)", () => {
       .signers([admin])
       .rpc({ commitment: "confirmed" });
 
-    console.log("Process claim computation queued");
+    console.log("Process claim computation queued (with integrated vesting calculation)");
+    console.log("  On-chain vesting_numerator will be emitted in event (fully vested)");
 
-    // Wait for MPC callback
-    console.log("Waiting for process_claim MPC callback (may take several minutes)...");
-    await waitForCallback(provider, claimAuthPda, "ProcessClaimCallback", 600000);
+    // Wait for MPC callback by polling account state directly
+    // (getSignaturesForAddress has indexing lag on devnet RPC)
+    console.log("Waiting for process_claim MPC callback (polling account state)...");
+    await waitForAccountState(
+      provider,
+      program,
+      claimAuthPda,
+      "claimAuthorization",
+      (account: any) => account.isProcessed === true,
+      600000,
+    );
     console.log("Process claim callback received");
 
     // Verify claim is now processed
@@ -642,6 +672,16 @@ async function initCompDef(
       })
       .signers([owner])
       .rpc({ commitment: "confirmed" });
+  } else if (circuitName === "process_claim_v2") {
+    sig = await program.methods
+      .initProcessClaimV2CompDef()
+      .accounts({
+        compDefAccount: compDefPDA,
+        payer: owner.publicKey,
+        mxeAccount: getMXEAccAddress(program.programId),
+      })
+      .signers([owner])
+      .rpc({ commitment: "confirmed" });
   } else {
     throw new Error(`Unknown circuit name: ${circuitName}`);
   }
@@ -669,6 +709,38 @@ async function getMXEPublicKeyWithRetry(
     await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
   }
   throw new Error(`Failed to fetch MXE public key after ${maxRetries} attempts`);
+}
+
+async function waitForAccountState(
+  provider: anchor.AnchorProvider,
+  program: Program<Contract>,
+  accountPda: PublicKey,
+  accountName: string,
+  predicate: (account: any) => boolean,
+  timeoutMs: number = 300000,
+): Promise<void> {
+  const startTime = Date.now();
+  const pollInterval = 3000;
+
+  while (Date.now() - startTime < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+
+    try {
+      const account = await (program.account as any)[accountName].fetch(accountPda);
+      if (predicate(account)) {
+        return;
+      }
+    } catch (err) {
+      // Account might not exist yet or be in transition
+    }
+
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    if (elapsed % 30 === 0 && elapsed > 0) {
+      console.log(`  Still waiting for ${accountName} state change... (${elapsed}s elapsed)`);
+    }
+  }
+
+  throw new Error(`Timeout waiting for ${accountName} state change after ${timeoutMs / 1000}s`);
 }
 
 async function waitForCallback(

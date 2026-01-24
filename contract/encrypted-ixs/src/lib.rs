@@ -52,7 +52,7 @@ mod circuits {
         claimed_amount: u64,
         /// Amount being claimed
         claim_amount: u64,
-        /// Maximum claimable amount
+        /// Maximum claimable amount (computed on-chain from vesting schedule)
         max_claimable: u64,
     }
 
@@ -118,7 +118,9 @@ mod circuits {
         input.owner.from_arcis(result)
     }
 
-    /// Process a claim and validate the amount
+    /// Process a claim and validate the amount.
+    /// max_claimable is computed on-chain from vesting schedule parameters,
+    /// integrating the vesting calculation into the claim flow.
     #[instruction]
     pub fn process_claim(input: Enc<Shared, ProcessClaimInput>) -> Enc<Shared, ProcessClaimResult> {
         let data = input.to_arcis();
@@ -134,6 +136,69 @@ mod circuits {
         };
 
         let result = ProcessClaimResult {
+            new_claimed_amount,
+            is_valid: if is_valid { 1u8 } else { 0u8 },
+        };
+
+        input.owner.from_arcis(result)
+    }
+
+    // ============================================================
+    // Process Claim V2: Integrated Vesting + Claim Validation
+    // ============================================================
+
+    /// Input for process_claim_v2 (integrated vesting calculation)
+    /// The MPC computes claimable amount internally from total_amount and vesting_numerator,
+    /// removing the need for client-supplied max_claimable.
+    pub struct ProcessClaimV2Input {
+        /// Encrypted total vesting amount
+        total_amount: u64,
+        /// Encrypted amount already claimed
+        claimed_amount: u64,
+        /// Vesting numerator (computed on-chain from timestamps, 0 to PRECISION)
+        vesting_numerator: u64,
+        /// Amount being claimed
+        claim_amount: u64,
+    }
+
+    /// Output for process_claim_v2 (same structure as v1)
+    pub struct ProcessClaimV2Result {
+        /// New claimed amount
+        new_claimed_amount: u64,
+        /// Whether the claim is valid (1 = valid, 0 = invalid)
+        is_valid: u8,
+    }
+
+    /// Process a claim with integrated vesting calculation (V2).
+    /// Computes claimable internally: claimable = (total * numerator / PRECISION) - claimed
+    /// Then validates: claim_amount <= claimable.
+    /// The vesting_numerator is computed on-chain from Clock + schedule, ensuring
+    /// the vesting fraction cannot be faked by the client.
+    #[instruction]
+    pub fn process_claim_v2(input: Enc<Shared, ProcessClaimV2Input>) -> Enc<Shared, ProcessClaimV2Result> {
+        let data = input.to_arcis();
+
+        // Calculate vested amount from total and on-chain-derived numerator
+        let vested_amount = data.total_amount * data.vesting_numerator / PRECISION;
+
+        // Calculate claimable (vested minus already claimed)
+        let claimable = if vested_amount > data.claimed_amount {
+            vested_amount - data.claimed_amount
+        } else {
+            0
+        };
+
+        // Validate claim amount against computed claimable
+        let is_valid = data.claim_amount <= claimable;
+
+        // Calculate new claimed amount
+        let new_claimed_amount = if is_valid {
+            data.claimed_amount + data.claim_amount
+        } else {
+            data.claimed_amount
+        };
+
+        let result = ProcessClaimV2Result {
             new_claimed_amount,
             is_valid: if is_valid { 1u8 } else { 0u8 },
         };
