@@ -29,7 +29,6 @@ import {
   getClusterAccAddress,
   getFeePoolAccAddress,
   getClockAccAddress,
-  awaitComputationFinalization,
   x25519,
   RescueCipher,
   deserializeLE,
@@ -127,18 +126,6 @@ describe("Arcium Meta-Keys Storage", () => {
   let originalSpendPriv: Uint8Array;
   let originalViewPriv: Uint8Array;
 
-  // Event listener helper
-  type Event = anchor.IdlEvents<(typeof program)["idl"]>;
-  const awaitEvent = async <E extends keyof Event>(eventName: E): Promise<Event[E]> => {
-    let listenerId: number;
-    const event = await new Promise<Event[E]>((res) => {
-      listenerId = program.addEventListener(eventName, (event) => {
-        res(event);
-      });
-    });
-    await program.removeEventListener(listenerId);
-    return event;
-  };
 
   before(async () => {
     owner = readKpJson(`${os.homedir()}/.config/solana/id.json`);
@@ -321,15 +308,17 @@ describe("Arcium Meta-Keys Storage", () => {
         throw e;
       }
 
-      // Wait for MPC computation
-      console.log("⏳ Waiting for MPC computation (this may take 30-60 seconds)...");
-      const finalizeSig = await awaitComputationFinalization(
+      // Wait for MPC callback by polling vault account state
+      console.log("⏳ Waiting for store_meta_keys callback (polling vault state)...");
+      await waitForAccountState(
         provider,
-        computationOffset,
-        program.programId,
-        "confirmed"
+        program,
+        vaultPDA,
+        "metaKeysVault",
+        (account: any) => account.isInitialized === true,
+        300000,
       );
-      console.log("✓ Computation finalized:", finalizeSig);
+      console.log("✓ Vault initialized by MPC callback");
 
       // Verify vault was created
       const vaultAccount = await program.account.metaKeysVault.fetch(vaultPDA);
@@ -360,8 +349,6 @@ describe("Arcium Meta-Keys Storage", () => {
         program.programId
       );
 
-      // Setup event listener
-      const metaKeysEventPromise = awaitEvent("metaKeysRetrieved");
       const computationOffset = new anchor.BN(randomBytes(8), "le");
 
       // Build accounts
@@ -386,6 +373,17 @@ describe("Arcium Meta-Keys Storage", () => {
         arciumProgram: getArciumProgramId(),
       };
 
+      // Set up event listener BEFORE queuing to avoid race condition
+      // (MPC callback fires within ~2 seconds)
+      let metaKeysEvent: any = null;
+      let eventListenerId: number;
+      const eventPromise = new Promise<any>((resolve) => {
+        eventListenerId = program.addEventListener("metaKeysRetrieved" as any, (event: any) => {
+          metaKeysEvent = event;
+          resolve(event);
+        });
+      });
+
       console.log("⏳ Queuing read computation...");
       const queueSig = await program.methods
         .readMetaKeysFromVault(
@@ -399,18 +397,55 @@ describe("Arcium Meta-Keys Storage", () => {
 
       console.log("✓ Queue transaction:", queueSig);
 
-      // Wait for MPC computation
-      console.log("⏳ Waiting for MPC computation...");
-      const finalizeSig = await awaitComputationFinalization(
-        provider,
-        computationOffset,
-        program.programId,
-        "confirmed"
-      );
-      console.log("✓ Computation finalized:", finalizeSig);
+      const computationPDA = getComputationAccAddress(arciumEnv.arciumClusterOffset, computationOffset);
 
-      // Get the event
-      const metaKeysEvent = await metaKeysEventPromise;
+      console.log("⏳ Waiting for fetch_meta_keys callback...");
+
+      // Wait for event via WebSocket (primary) or poll signatures (fallback)
+      const timeoutMs = 300000;
+      const startTime = Date.now();
+
+      while (!metaKeysEvent && Date.now() - startTime < timeoutMs) {
+        // Try getSignaturesForAddress as fallback
+        try {
+          const sigs = await provider.connection.getSignaturesForAddress(computationPDA, { limit: 10 });
+          const eventParser = new anchor.EventParser(program.programId, program.coder);
+          for (const sigInfo of sigs) {
+            if (sigInfo.err || sigInfo.signature === queueSig) continue;
+            const tx = await provider.connection.getTransaction(sigInfo.signature, {
+              commitment: "confirmed",
+              maxSupportedTransactionVersion: 0,
+            });
+            if (tx?.meta?.logMessages) {
+              for (const event of eventParser.parseLogs(tx.meta.logMessages)) {
+                if (event.name === "MetaKeysRetrieved" || event.name === "metaKeysRetrieved") {
+                  metaKeysEvent = event.data;
+                  break;
+                }
+              }
+              if (metaKeysEvent) break;
+            }
+          }
+        } catch (err) {
+          // Ignore and retry
+        }
+
+        if (!metaKeysEvent) {
+          const elapsed = Math.floor((Date.now() - startTime) / 1000);
+          if (elapsed % 30 === 0 && elapsed > 0) {
+            console.log(`  Still waiting for callback... (${elapsed}s elapsed)`);
+          }
+          await new Promise((r) => setTimeout(r, 5000));
+        }
+      }
+
+      // Clean up listener
+      try { await program.removeEventListener(eventListenerId!); } catch {}
+
+      if (!metaKeysEvent) {
+        throw new Error("MetaKeysRetrieved event not found after timeout");
+      }
+
       console.log("\n📨 Received MetaKeysRetrieved event");
       console.log("  Owner:", metaKeysEvent.owner.toBase58());
       console.log("  Vault:", metaKeysEvent.vault.toBase58());
@@ -452,3 +487,40 @@ describe("Arcium Meta-Keys Storage", () => {
     });
   });
 });
+
+// ============================================================
+// Helper Functions
+// ============================================================
+
+async function waitForAccountState(
+  provider: anchor.AnchorProvider,
+  program: Program<Contract>,
+  accountPda: PublicKey,
+  accountName: string,
+  predicate: (account: any) => boolean,
+  timeoutMs: number = 300000,
+): Promise<void> {
+  const startTime = Date.now();
+  const pollInterval = 3000;
+
+  while (Date.now() - startTime < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+
+    try {
+      const account = await (program.account as any)[accountName].fetch(accountPda);
+      if (predicate(account)) {
+        return;
+      }
+    } catch (err) {
+      // Account might not exist yet
+    }
+
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    if (elapsed % 30 === 0 && elapsed > 0) {
+      console.log(`  Still waiting for ${accountName} state change... (${elapsed}s elapsed)`);
+    }
+  }
+
+  throw new Error(`Timeout waiting for ${accountName} state change after ${timeoutMs / 1000}s`);
+}
+
