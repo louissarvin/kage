@@ -90,4 +90,29 @@ pub enum ShadowVestError {
 
     #[msg("Insufficient vault balance for withdrawal")]
     InsufficientVaultBalance,
+
+    // Phase 6: Groth16 ZK proof verification errors
+    #[msg("Proof verification failed")]
+    ProofVerificationFailed,
+
+    #[msg("Invalid number of public inputs for this circuit")]
+    InvalidPublicInputCount,
+
+    #[msg("alt_bn128 group operation failed")]
+    Bn128GroupOpFailed,
+
+    #[msg("alt_bn128 pairing check failed")]
+    Bn128PairingFailed,
+
+    #[msg("Verification key is not active")]
+    VerificationKeyNotActive,
+
+    #[msg("Invalid verification key data")]
+    InvalidVerificationKeyData,
+
+    #[msg("Circuit ID mismatch")]
+    CircuitIdMismatch,
+
+    #[msg("Proof record already exists for this nullifier")]
+    ProofRecordAlreadyExists,
 }

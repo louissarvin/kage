@@ -1,0 +1,29 @@
+# Identity Proof - Example Prover Inputs
+#
+# These are example values for generating a test proof.
+# In production, these would be derived from the employee's
+# stealth key material and the on-chain position data.
+#
+# The position_commitment must equal:
+#   Poseidon(identity_commitment, encrypted_amount, start_time, cliff, duration)
+# where identity_commitment = Poseidon(identity_preimage)
+
+# --- Public Input ---
+
+# The on-chain position commitment (stored in Light Protocol compressed account)
+# This value must be computed from the private inputs below.
+# position_commitment = Poseidon(Poseidon(identity_preimage), position_data[0..3])
+position_commitment = "0"
+
+# --- Private Inputs ---
+
+# Secret identity value - only known to the beneficiary
+# This is derived from the employee's stealth key material
+identity_preimage = "77"
+
+# Position data fields:
+# [0] encrypted_amount - The encrypted vesting amount (ciphertext)
+# [1] start_time       - Unix timestamp when vesting begins
+# [2] cliff            - Cliff period in seconds (e.g., 2592000 = 30 days)
+# [3] duration         - Total vesting duration in seconds (e.g., 31536000 = 1 year)
+position_data = ["50000", "1700000000", "2592000", "31536000"]

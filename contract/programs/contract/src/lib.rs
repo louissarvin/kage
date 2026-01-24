@@ -17,17 +17,26 @@ use light_sdk::{
         InvokeLightSystemProgram, LightCpiInstruction,
     },
     derive_light_cpi_signer,
-    instruction::{PackedAddressTreeInfo, ValidityProof},
+    instruction::{
+        account_meta::CompressedAccountMeta,
+        PackedAddressTreeInfo, ValidityProof,
+    },
     CpiSigner,
 };
 
 pub mod errors;
+pub mod groth16_verifier;
 pub mod state;
 
 use errors::ShadowVestError;
+use groth16_verifier::{
+    EligibilityPublicInputs, Groth16Proof, IdentityPublicInputs, VerificationKey,
+    WithdrawalPublicInputs,
+};
 use state::{
     ClaimAuthorization, CompressedVestingPosition, MetaKeysVault, NullifierRecord,
-    Organization, StealthMetaAddress, StealthPaymentEvent, VestingPosition, VestingSchedule,
+    Organization, ProofRecord, StealthMetaAddress, StealthPaymentEvent,
+    VerificationKeyAccount, VestingPosition, VestingSchedule,
 };
 
 // Computation definition offsets for Arcium circuits
@@ -779,6 +788,33 @@ pub mod contract {
         Ok(())
     }
 
+    /// Deposit tokens into the organization vault.
+    /// The depositor transfers SPL tokens from their token account to the vault.
+    pub fn deposit_to_vault(ctx: Context<DepositToVault>, amount: u64) -> Result<()> {
+        require!(ctx.accounts.organization.is_active, ShadowVestError::OrganizationNotActive);
+        require!(amount > 0, ShadowVestError::InvalidClaimAmount);
+
+        // Transfer tokens from admin's token account to vault
+        let transfer_ctx = CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            Transfer {
+                from: ctx.accounts.admin_token_account.to_account_info(),
+                to: ctx.accounts.vault.to_account_info(),
+                authority: ctx.accounts.admin.to_account_info(),
+            },
+        );
+        token::transfer(transfer_ctx, amount)?;
+
+        emit!(VaultDeposited {
+            organization: ctx.accounts.organization.key(),
+            vault: ctx.accounts.vault.key(),
+            depositor: ctx.accounts.admin.key(),
+            amount,
+        });
+
+        Ok(())
+    }
+
     /// Withdraw tokens from the organization vault to the beneficiary's destination.
     ///
     /// Verifies the claim has been authorized, processed by MPC, and not yet withdrawn.
@@ -1106,6 +1142,419 @@ pub mod contract {
     }
 
     // ============================================================
+    // Compressed Position Claim & Withdraw Flow
+    // ============================================================
+
+    /// Authorize a claim from a compressed vesting position.
+    ///
+    /// Similar to authorize_claim but works with Light Protocol compressed accounts.
+    /// The compressed position data is read via Light Protocol CPI (validity proof verification).
+    /// An Ed25519 signature from the stealth keypair authorizes the claim.
+    ///
+    /// This creates a ClaimAuthorization PDA that the withdraw_compressed() can reference.
+    pub fn authorize_claim_compressed<'info>(
+        ctx: Context<'_, '_, '_, 'info, AuthorizeClaimCompressed<'info>>,
+        proof_bytes: Vec<u8>,
+        account_meta_bytes: Vec<u8>,
+        // Compressed position data (client fetches from Light RPC):
+        position_owner: Pubkey,
+        position_organization: Pubkey,
+        position_schedule: Pubkey,
+        position_id: u64,
+        beneficiary_commitment: [u8; 32],
+        encrypted_total_amount: [u8; 32],
+        encrypted_claimed_amount: [u8; 32],
+        position_nonce: u128,
+        position_start_timestamp: i64,
+        position_is_active: u8,
+        position_is_fully_claimed: u8,
+        // Claim params:
+        nullifier: [u8; 32],
+        withdrawal_destination: Pubkey,
+    ) -> Result<()> {
+        // 1. Verify organization is active
+        require!(ctx.accounts.organization.is_active, ShadowVestError::OrganizationNotActive);
+
+        // 2. Verify position is active and not fully claimed
+        require!(position_is_active == 1, ShadowVestError::PositionNotActive);
+        require!(position_is_fully_claimed == 0, ShadowVestError::PositionFullyClaimed);
+
+        // 3. Verify position belongs to this organization
+        require!(
+            position_organization == ctx.accounts.organization.key(),
+            ShadowVestError::InvalidPositionOrganization
+        );
+
+        // 4. Deserialize Light Protocol types
+        let proof: ValidityProof = borsh::BorshDeserialize::try_from_slice(&proof_bytes)
+            .map_err(|_| ShadowVestError::LightProtocolCpiFailed)?;
+        let account_meta: CompressedAccountMeta =
+            borsh::BorshDeserialize::try_from_slice(&account_meta_bytes)
+                .map_err(|_| ShadowVestError::LightProtocolCpiFailed)?;
+
+        // 5. Initialize CPI accounts for Light Protocol
+        let cpi_accounts = CpiAccounts::new(
+            ctx.accounts.fee_payer.as_ref(),
+            ctx.remaining_accounts,
+            crate::LIGHT_CPI_SIGNER,
+        );
+
+        // 6. Get the address from account_meta (set during creation)
+        let address = account_meta.address;
+
+        // 7. Load the existing compressed position via Light Protocol
+        //    This verifies the data matches what's in the Merkle tree
+        let compressed_position = LightAccount::<CompressedVestingPosition>::new_mut(
+            &crate::ID,
+            &account_meta,
+            CompressedVestingPosition {
+                owner: position_owner,
+                organization: position_organization,
+                schedule: position_schedule,
+                position_id,
+                beneficiary_commitment,
+                encrypted_total_amount,
+                encrypted_claimed_amount,
+                nonce: position_nonce,
+                start_timestamp: position_start_timestamp,
+                is_active: position_is_active,
+                is_fully_claimed: position_is_fully_claimed,
+            },
+        ).map_err(|_| ShadowVestError::LightProtocolCpiFailed)?;
+
+        // 8. Verify Ed25519 signature (same as regular authorize_claim)
+        let ix_sysvar = &ctx.accounts.instructions_sysvar;
+        let current_ix_index = sysvar_instructions::load_current_index_checked(ix_sysvar)
+            .map_err(|_| ShadowVestError::InvalidEligibilitySignature)?;
+        require!(current_ix_index > 0, ShadowVestError::InvalidEligibilitySignature);
+
+        let ed25519_ix = sysvar_instructions::load_instruction_at_checked(
+            (current_ix_index - 1) as usize,
+            ix_sysvar,
+        ).map_err(|_| ShadowVestError::InvalidEligibilitySignature)?;
+
+        require!(
+            ed25519_ix.program_id == ED25519_PROGRAM_ID,
+            ShadowVestError::InvalidEligibilitySignature
+        );
+        require!(ed25519_ix.data.len() >= 16, ShadowVestError::InvalidEligibilitySignature);
+
+        let num_signatures = ed25519_ix.data[0];
+        require!(num_signatures == 1, ShadowVestError::InvalidEligibilitySignature);
+
+        let pubkey_offset = u16::from_le_bytes([ed25519_ix.data[6], ed25519_ix.data[7]]) as usize;
+        require!(
+            ed25519_ix.data.len() >= pubkey_offset + 32,
+            ShadowVestError::InvalidEligibilitySignature
+        );
+        let signer_pubkey = &ed25519_ix.data[pubkey_offset..pubkey_offset + 32];
+
+        // Verify signer matches beneficiary_commitment
+        require!(
+            signer_pubkey == beneficiary_commitment,
+            ShadowVestError::SignerMismatch
+        );
+
+        // Verify message content: position_id || nullifier || withdrawal_destination
+        let message_data_offset = u16::from_le_bytes([ed25519_ix.data[10], ed25519_ix.data[11]]) as usize;
+        let message_data_size = u16::from_le_bytes([ed25519_ix.data[12], ed25519_ix.data[13]]) as usize;
+        require!(
+            ed25519_ix.data.len() >= message_data_offset + message_data_size,
+            ShadowVestError::InvalidEligibilitySignature
+        );
+        let signed_message = &ed25519_ix.data[message_data_offset..message_data_offset + message_data_size];
+
+        let mut expected_msg = [0u8; 72];
+        expected_msg[..8].copy_from_slice(&position_id.to_le_bytes());
+        expected_msg[8..40].copy_from_slice(&nullifier);
+        expected_msg[40..72].copy_from_slice(withdrawal_destination.as_ref());
+
+        require!(
+            signed_message == expected_msg,
+            ShadowVestError::InvalidEligibilitySignature
+        );
+
+        // 9. Verify compressed position exists via Light Protocol CPI
+        //    We pass the same data as output (no state change here).
+        LightSystemProgramCpi::new_cpi(crate::LIGHT_CPI_SIGNER, proof)
+            .with_light_account(compressed_position)?
+            .invoke(cpi_accounts)?;
+
+        // 10. Initialize ClaimAuthorization
+        let clock = Clock::get()?;
+        let claim_auth = &mut ctx.accounts.claim_authorization;
+        claim_auth.position = Pubkey::new_from_array(address);
+        claim_auth.nullifier = nullifier;
+        claim_auth.withdrawal_destination = withdrawal_destination;
+        claim_auth.claim_amount = 0;
+        claim_auth.is_authorized = true;
+        claim_auth.is_processed = false;
+        claim_auth.is_withdrawn = false;
+        claim_auth.authorized_at = clock.unix_timestamp;
+        claim_auth.bump = ctx.bumps.claim_authorization;
+
+        // 11. Initialize NullifierRecord
+        let nullifier_record = &mut ctx.accounts.nullifier_record;
+        nullifier_record.nullifier = nullifier;
+        nullifier_record.position = Pubkey::new_from_array(address);
+        nullifier_record.used_at = clock.unix_timestamp;
+        nullifier_record.bump = ctx.bumps.nullifier_record;
+
+        emit!(ClaimAuthorized {
+            position: Pubkey::new_from_array(address),
+            nullifier,
+            withdrawal_destination,
+        });
+
+        Ok(())
+    }
+
+    /// Queue MPC computation for a compressed position claim.
+    /// Computes vesting_numerator on-chain from Clock + schedule parameters.
+    pub fn queue_process_claim_compressed(
+        ctx: Context<QueueProcessClaimCompressed>,
+        computation_offset: u64,
+        position_id: u64,
+        encrypted_total_amount: [u8; 32],
+        encrypted_claimed_amount: [u8; 32],
+        encrypted_vesting_numerator: [u8; 32],
+        encrypted_claim_amount: [u8; 32],
+        claim_amount: u64,
+        start_timestamp: i64,
+        pubkey: [u8; 32],
+        nonce: u128,
+    ) -> Result<()> {
+        require!(ctx.accounts.claim_authorization.is_authorized, ShadowVestError::ClaimNotAuthorized);
+        require!(!ctx.accounts.claim_authorization.is_processed, ShadowVestError::ClaimNotProcessed);
+
+        // Capture position key before mutable borrow
+        let claim_position = ctx.accounts.claim_authorization.position;
+
+        let schedule = &ctx.accounts.schedule;
+
+        // Compute vesting_numerator on-chain
+        let clock = Clock::get()?;
+        let current_time = clock.unix_timestamp;
+        let cliff_end = start_timestamp + schedule.cliff_duration as i64;
+        let vesting_end = start_timestamp + schedule.total_duration as i64;
+
+        const PRECISION: u64 = 1_000_000;
+        let vesting_numerator = if current_time < cliff_end {
+            0u64
+        } else if current_time >= vesting_end {
+            PRECISION
+        } else {
+            let elapsed = (current_time - cliff_end) as u64;
+            let intervals = elapsed / schedule.vesting_interval;
+            let vested_seconds = intervals * schedule.vesting_interval;
+            let vesting_duration = schedule.total_duration - schedule.cliff_duration;
+            if vesting_duration > 0 {
+                vested_seconds * PRECISION / vesting_duration
+            } else {
+                PRECISION
+            }
+        };
+
+        ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
+
+        let args = ArgBuilder::new()
+            .x25519_pubkey(pubkey)
+            .plaintext_u128(nonce)
+            .encrypted_u64(encrypted_total_amount)
+            .encrypted_u64(encrypted_claimed_amount)
+            .encrypted_u64(encrypted_vesting_numerator)
+            .encrypted_u64(encrypted_claim_amount)
+            .build();
+
+        let position_callback_account = CallbackAccount {
+            pubkey: ctx.accounts.position.key(),
+            is_writable: true,
+        };
+        let claim_auth_callback_account = CallbackAccount {
+            pubkey: ctx.accounts.claim_authorization.key(),
+            is_writable: true,
+        };
+
+        let callback_ix = ProcessClaimV2Callback::callback_ix(
+            computation_offset,
+            &ctx.accounts.mxe_account,
+            &[position_callback_account, claim_auth_callback_account],
+        )?;
+
+        queue_computation(
+            ctx.accounts,
+            computation_offset,
+            args,
+            None,
+            vec![callback_ix],
+            1,
+            0,
+        )?;
+
+        let claim_auth_mut = &mut ctx.accounts.claim_authorization;
+        claim_auth_mut.claim_amount = claim_amount;
+
+        emit!(ClaimProcessQueued {
+            position: claim_position,
+            position_id,
+            claim_amount,
+            computation_offset,
+            vesting_numerator,
+        });
+
+        Ok(())
+    }
+
+    /// Update the encrypted_claimed_amount on a compressed vesting position.
+    ///
+    /// Called after process_claim_v2_compressed_callback() confirms the claim is valid.
+    /// This updates the Light Protocol Merkle tree with the new claimed amount.
+    ///
+    /// Can only be called when the associated ClaimAuthorization is_processed=true
+    /// and is_withdrawn=false (prevents unauthorized updates).
+    pub fn update_compressed_position_claimed<'info>(
+        ctx: Context<'_, '_, '_, 'info, UpdateCompressedPositionClaimed<'info>>,
+        proof_bytes: Vec<u8>,
+        account_meta_bytes: Vec<u8>,
+        // Current compressed position data:
+        position_owner: Pubkey,
+        position_organization: Pubkey,
+        position_schedule: Pubkey,
+        position_id: u64,
+        beneficiary_commitment: [u8; 32],
+        encrypted_total_amount: [u8; 32],
+        encrypted_claimed_amount: [u8; 32],
+        position_nonce: u128,
+        position_start_timestamp: i64,
+        position_is_active: u8,
+        position_is_fully_claimed: u8,
+        // New values:
+        new_encrypted_claimed_amount: [u8; 32],
+        new_is_fully_claimed: u8,
+    ) -> Result<()> {
+        let claim_auth = &ctx.accounts.claim_authorization;
+        require!(claim_auth.is_authorized, ShadowVestError::ClaimNotAuthorized);
+        require!(claim_auth.is_processed, ShadowVestError::ClaimNotProcessed);
+        require!(!claim_auth.is_withdrawn, ShadowVestError::AlreadyWithdrawn);
+
+        // Verify position belongs to organization
+        require!(
+            position_organization == ctx.accounts.organization.key(),
+            ShadowVestError::InvalidPositionOrganization
+        );
+
+        // Deserialize Light Protocol types
+        let proof: ValidityProof = borsh::BorshDeserialize::try_from_slice(&proof_bytes)
+            .map_err(|_| ShadowVestError::LightProtocolCpiFailed)?;
+        let account_meta: CompressedAccountMeta =
+            borsh::BorshDeserialize::try_from_slice(&account_meta_bytes)
+                .map_err(|_| ShadowVestError::LightProtocolCpiFailed)?;
+
+        let cpi_accounts = CpiAccounts::new(
+            ctx.accounts.fee_payer.as_ref(),
+            ctx.remaining_accounts,
+            crate::LIGHT_CPI_SIGNER,
+        );
+
+        // Get the address from account_meta
+        let address = account_meta.address;
+
+        // Load existing compressed position for mutation
+        let mut compressed_position = LightAccount::<CompressedVestingPosition>::new_mut(
+            &crate::ID,
+            &account_meta,
+            CompressedVestingPosition {
+                owner: position_owner,
+                organization: position_organization,
+                schedule: position_schedule,
+                position_id,
+                beneficiary_commitment,
+                encrypted_total_amount,
+                encrypted_claimed_amount,
+                nonce: position_nonce,
+                start_timestamp: position_start_timestamp,
+                is_active: position_is_active,
+                is_fully_claimed: position_is_fully_claimed,
+            },
+        ).map_err(|_| ShadowVestError::LightProtocolCpiFailed)?;
+
+        // Update the claimed amount and fully_claimed flag
+        compressed_position.encrypted_claimed_amount = new_encrypted_claimed_amount;
+        compressed_position.is_fully_claimed = new_is_fully_claimed;
+
+        // Execute Light Protocol CPI to commit the state transition
+        LightSystemProgramCpi::new_cpi(crate::LIGHT_CPI_SIGNER, proof)
+            .with_light_account(compressed_position)?
+            .invoke(cpi_accounts)?;
+
+        emit!(CompressedPositionClaimUpdated {
+            organization: ctx.accounts.organization.key(),
+            position_id,
+            address,
+            new_is_fully_claimed: new_is_fully_claimed == 1,
+        });
+
+        Ok(())
+    }
+
+    /// Withdraw tokens from the organization vault for a compressed position claim.
+    ///
+    /// Similar to withdraw() but uses ClaimAuthorization derived from compressed position seeds
+    /// (organization + position_id + nullifier) instead of regular position account key.
+    pub fn withdraw_compressed(
+        ctx: Context<WithdrawCompressed>,
+        _position_id: u64,
+        _nullifier: [u8; 32],
+    ) -> Result<()> {
+        let claim_auth = &ctx.accounts.claim_authorization;
+        require!(claim_auth.is_authorized, ShadowVestError::ClaimNotAuthorized);
+        require!(claim_auth.is_processed, ShadowVestError::ClaimNotProcessed);
+        require!(!claim_auth.is_withdrawn, ShadowVestError::AlreadyWithdrawn);
+        require!(
+            ctx.accounts.destination.key() == claim_auth.withdrawal_destination,
+            ShadowVestError::InvalidWithdrawalDestination
+        );
+
+        let amount = claim_auth.claim_amount;
+        require!(
+            ctx.accounts.vault.amount >= amount,
+            ShadowVestError::InsufficientVaultBalance
+        );
+
+        let org_key = ctx.accounts.organization.key();
+        let bump = ctx.bumps.vault_authority;
+        let vault_authority_seeds: &[&[u8]] = &[
+            b"vault_authority",
+            org_key.as_ref(),
+            std::slice::from_ref(&bump),
+        ];
+        let signer_seeds = &[vault_authority_seeds];
+
+        let transfer_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            Transfer {
+                from: ctx.accounts.vault.to_account_info(),
+                to: ctx.accounts.destination.to_account_info(),
+                authority: ctx.accounts.vault_authority.to_account_info(),
+            },
+            signer_seeds,
+        );
+        token::transfer(transfer_ctx, amount)?;
+
+        let claim_auth_mut = &mut ctx.accounts.claim_authorization;
+        claim_auth_mut.is_withdrawn = true;
+
+        emit!(ClaimWithdrawn {
+            position: claim_auth_mut.position,
+            destination: claim_auth_mut.withdrawal_destination,
+            amount,
+            token_mint: ctx.accounts.vault.mint,
+        });
+
+        Ok(())
+    }
+
+    // ============================================================
     // Stealth Address Management
     // ============================================================
 
@@ -1387,6 +1836,228 @@ pub mod contract {
             encrypted_view_lo: verified.field_0.ciphertexts[2],
             encrypted_view_hi: verified.field_0.ciphertexts[3],
             nonce: verified.field_0.nonce.to_le_bytes(),
+        });
+
+        Ok(())
+    }
+
+    // ============================================================
+    // Groth16 ZK Proof Verification (Noir Circuits)
+    // ============================================================
+
+    /// Store a verification key on-chain for a specific Noir circuit.
+    ///
+    /// Only the designated authority (DAO admin) can store VKs.
+    /// The VK is derived from the circuit's trusted setup and contains
+    /// the parameters needed for Groth16 proof verification.
+    ///
+    /// Each circuit type (withdrawal_proof, identity_proof, eligibility)
+    /// has a unique circuit_id derived as sha256(circuit_name).
+    ///
+    /// # Arguments
+    /// * `circuit_id` - 32-byte identifier for the circuit
+    /// * `vk_data` - Serialized VerificationKey bytes
+    pub fn store_verification_key(
+        ctx: Context<StoreVerificationKey>,
+        circuit_id: [u8; 32],
+        vk_data: Vec<u8>,
+    ) -> Result<()> {
+        require!(
+            vk_data.len() <= VerificationKeyAccount::MAX_VK_DATA_SIZE,
+            ShadowVestError::InvalidVerificationKeyData
+        );
+
+        // Validate the VK data can be deserialized
+        let _vk: VerificationKey = AnchorDeserialize::try_from_slice(&vk_data)
+            .map_err(|_| ShadowVestError::InvalidVerificationKeyData)?;
+
+        let vk_account = &mut ctx.accounts.vk_account;
+        vk_account.authority = ctx.accounts.authority.key();
+        vk_account.circuit_id = circuit_id;
+        vk_account.vk_data = vk_data;
+        vk_account.is_active = true;
+        vk_account.bump = ctx.bumps.vk_account;
+
+        emit!(VerificationKeyStored {
+            authority: vk_account.authority,
+            circuit_id,
+            vk_account: vk_account.key(),
+        });
+
+        Ok(())
+    }
+
+    /// Update a verification key (e.g., after a new trusted setup).
+    ///
+    /// Only the original authority can update. This allows key rotation
+    /// without changing the circuit_id PDA.
+    pub fn update_verification_key(
+        ctx: Context<UpdateVerificationKey>,
+        vk_data: Vec<u8>,
+    ) -> Result<()> {
+        require!(
+            vk_data.len() <= VerificationKeyAccount::MAX_VK_DATA_SIZE,
+            ShadowVestError::InvalidVerificationKeyData
+        );
+
+        // Validate the VK data can be deserialized
+        let _vk: VerificationKey = AnchorDeserialize::try_from_slice(&vk_data)
+            .map_err(|_| ShadowVestError::InvalidVerificationKeyData)?;
+
+        let vk_account = &mut ctx.accounts.vk_account;
+        vk_account.vk_data = vk_data;
+
+        emit!(VerificationKeyUpdated {
+            circuit_id: vk_account.circuit_id,
+            vk_account: vk_account.key(),
+        });
+
+        Ok(())
+    }
+
+    /// Verify a withdrawal proof on-chain.
+    ///
+    /// Performs Groth16 verification using the stored VK for the withdrawal circuit.
+    /// On success, creates a ProofRecord PDA that other instructions can reference.
+    ///
+    /// The withdrawal proof demonstrates:
+    /// - Knowledge of a valid vesting position in the state tree
+    /// - The position is in the correct epoch
+    /// - The nullifier has not been used before
+    /// - The prover is entitled to the withdrawal
+    ///
+    /// Requires ~1,400,000 compute units (pairing is expensive).
+    pub fn verify_withdrawal_proof(
+        ctx: Context<VerifyWithdrawalProof>,
+        proof: Groth16Proof,
+        public_inputs: WithdrawalPublicInputs,
+    ) -> Result<()> {
+        let vk_account = &ctx.accounts.vk_account;
+        require!(vk_account.is_active, ShadowVestError::VerificationKeyNotActive);
+
+        // Deserialize the verification key
+        let vk: VerificationKey = AnchorDeserialize::try_from_slice(&vk_account.vk_data)
+            .map_err(|_| ShadowVestError::InvalidVerificationKeyData)?;
+
+        // Convert public inputs to scalars
+        let scalars = public_inputs.to_scalars();
+
+        // Perform Groth16 verification
+        let is_valid = groth16_verifier::verify_groth16(&vk, &proof, &scalars)?;
+        require!(is_valid, ShadowVestError::ProofVerificationFailed);
+
+        // Create proof record
+        let clock = Clock::get()?;
+        let proof_record = &mut ctx.accounts.proof_record;
+        proof_record.verifier = ctx.accounts.verifier.key();
+        proof_record.circuit_id = vk_account.circuit_id;
+        proof_record.nullifier = public_inputs.nullifier;
+        proof_record.verified_at = clock.unix_timestamp;
+        proof_record.is_valid = true;
+        proof_record.bump = ctx.bumps.proof_record;
+
+        emit!(ProofVerified {
+            verifier: proof_record.verifier,
+            circuit_id: proof_record.circuit_id,
+            nullifier: proof_record.nullifier,
+            proof_type: ProofType::Withdrawal,
+            verified_at: proof_record.verified_at,
+        });
+
+        Ok(())
+    }
+
+    /// Verify an identity proof on-chain.
+    ///
+    /// The identity proof demonstrates knowledge of the secret behind
+    /// a position commitment, without revealing the secret itself.
+    /// This is used to prove ownership of a vesting position.
+    ///
+    /// Creates a ProofRecord keyed by position_commitment as the nullifier.
+    pub fn verify_identity_proof(
+        ctx: Context<VerifyIdentityProof>,
+        proof: Groth16Proof,
+        public_inputs: IdentityPublicInputs,
+    ) -> Result<()> {
+        let vk_account = &ctx.accounts.vk_account;
+        require!(vk_account.is_active, ShadowVestError::VerificationKeyNotActive);
+
+        // Deserialize the verification key
+        let vk: VerificationKey = AnchorDeserialize::try_from_slice(&vk_account.vk_data)
+            .map_err(|_| ShadowVestError::InvalidVerificationKeyData)?;
+
+        // Convert public inputs to scalars
+        let scalars = public_inputs.to_scalars();
+
+        // Perform Groth16 verification
+        let is_valid = groth16_verifier::verify_groth16(&vk, &proof, &scalars)?;
+        require!(is_valid, ShadowVestError::ProofVerificationFailed);
+
+        // Create proof record (use position_commitment as nullifier for identity proofs)
+        let clock = Clock::get()?;
+        let proof_record = &mut ctx.accounts.proof_record;
+        proof_record.verifier = ctx.accounts.verifier.key();
+        proof_record.circuit_id = vk_account.circuit_id;
+        proof_record.nullifier = public_inputs.position_commitment;
+        proof_record.verified_at = clock.unix_timestamp;
+        proof_record.is_valid = true;
+        proof_record.bump = ctx.bumps.proof_record;
+
+        emit!(ProofVerified {
+            verifier: proof_record.verifier,
+            circuit_id: proof_record.circuit_id,
+            nullifier: proof_record.nullifier,
+            proof_type: ProofType::Identity,
+            verified_at: proof_record.verified_at,
+        });
+
+        Ok(())
+    }
+
+    /// Verify an eligibility proof on-chain.
+    ///
+    /// The eligibility proof demonstrates:
+    /// - The prover is the designated beneficiary of a position
+    /// - The nullifier has not been used (prevents double-claim)
+    /// - The prover knows the opening to the position commitment
+    ///
+    /// This is the primary proof used in the claim-withdraw flow,
+    /// replacing or augmenting the Ed25519 signature verification.
+    pub fn verify_eligibility_proof(
+        ctx: Context<VerifyEligibilityProof>,
+        proof: Groth16Proof,
+        public_inputs: EligibilityPublicInputs,
+    ) -> Result<()> {
+        let vk_account = &ctx.accounts.vk_account;
+        require!(vk_account.is_active, ShadowVestError::VerificationKeyNotActive);
+
+        // Deserialize the verification key
+        let vk: VerificationKey = AnchorDeserialize::try_from_slice(&vk_account.vk_data)
+            .map_err(|_| ShadowVestError::InvalidVerificationKeyData)?;
+
+        // Convert public inputs to scalars
+        let scalars = public_inputs.to_scalars();
+
+        // Perform Groth16 verification
+        let is_valid = groth16_verifier::verify_groth16(&vk, &proof, &scalars)?;
+        require!(is_valid, ShadowVestError::ProofVerificationFailed);
+
+        // Create proof record
+        let clock = Clock::get()?;
+        let proof_record = &mut ctx.accounts.proof_record;
+        proof_record.verifier = ctx.accounts.verifier.key();
+        proof_record.circuit_id = vk_account.circuit_id;
+        proof_record.nullifier = public_inputs.nullifier;
+        proof_record.verified_at = clock.unix_timestamp;
+        proof_record.is_valid = true;
+        proof_record.bump = ctx.bumps.proof_record;
+
+        emit!(ProofVerified {
+            verifier: proof_record.verifier,
+            circuit_id: proof_record.circuit_id,
+            nullifier: proof_record.nullifier,
+            proof_type: ProofType::Eligibility,
+            verified_at: proof_record.verified_at,
         });
 
         Ok(())
@@ -1935,6 +2606,36 @@ pub struct InitializeVault<'info> {
 }
 
 #[derive(Accounts)]
+pub struct DepositToVault<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+
+    #[account(
+        seeds = [Organization::SEED_PREFIX, admin.key().as_ref()],
+        bump = organization.bump,
+        has_one = admin @ ShadowVestError::UnauthorizedAdmin,
+    )]
+    pub organization: Account<'info, Organization>,
+
+    #[account(
+        mut,
+        token::mint = organization.token_mint,
+        seeds = [b"vault", organization.key().as_ref()],
+        bump,
+    )]
+    pub vault: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        token::mint = organization.token_mint,
+        token::authority = admin,
+    )]
+    pub admin_token_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
 pub struct Withdraw<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -1972,6 +2673,195 @@ pub struct Withdraw<'info> {
         seeds = [b"vault", organization.key().as_ref()],
         bump,
         token::authority = vault_authority,
+    )]
+    pub vault: Account<'info, TokenAccount>,
+
+    #[account(mut)]
+    pub destination: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+// ============================================================
+// Account Contexts - Compressed Position Claim & Withdraw
+// ============================================================
+
+#[derive(Accounts)]
+#[instruction(
+    proof_bytes: Vec<u8>,
+    account_meta_bytes: Vec<u8>,
+    position_owner: Pubkey,
+    position_organization: Pubkey,
+    position_schedule: Pubkey,
+    position_id: u64,
+    beneficiary_commitment: [u8; 32],
+    encrypted_total_amount: [u8; 32],
+    encrypted_claimed_amount: [u8; 32],
+    position_nonce: u128,
+    position_start_timestamp: i64,
+    position_is_active: u8,
+    position_is_fully_claimed: u8,
+    nullifier: [u8; 32],
+    withdrawal_destination: Pubkey,
+)]
+pub struct AuthorizeClaimCompressed<'info> {
+    #[account(mut)]
+    pub fee_payer: Signer<'info>,
+
+    #[account(
+        seeds = [Organization::SEED_PREFIX, organization.admin.as_ref()],
+        bump = organization.bump,
+    )]
+    pub organization: Account<'info, Organization>,
+
+    #[account(
+        init,
+        payer = fee_payer,
+        space = ClaimAuthorization::SIZE,
+        seeds = [
+            ClaimAuthorization::SEED_PREFIX,
+            organization.key().as_ref(),
+            &position_id.to_le_bytes(),
+            nullifier.as_ref(),
+        ],
+        bump,
+    )]
+    pub claim_authorization: Account<'info, ClaimAuthorization>,
+
+    #[account(
+        init,
+        payer = fee_payer,
+        space = NullifierRecord::SIZE,
+        seeds = [NullifierRecord::SEED_PREFIX, organization.key().as_ref(), nullifier.as_ref()],
+        bump,
+    )]
+    pub nullifier_record: Account<'info, NullifierRecord>,
+
+    /// CHECK: Instructions sysvar for Ed25519 verification
+    #[account(address = anchor_lang::solana_program::sysvar::instructions::ID)]
+    pub instructions_sysvar: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[queue_computation_accounts("process_claim_v2", payer)]
+#[derive(Accounts)]
+#[instruction(computation_offset: u64)]
+pub struct QueueProcessClaimCompressed<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(
+        seeds = [Organization::SEED_PREFIX, organization.admin.as_ref()],
+        bump = organization.bump,
+    )]
+    pub organization: Account<'info, Organization>,
+
+    #[account(
+        seeds = [VestingSchedule::SEED_PREFIX, organization.key().as_ref(), schedule.schedule_id.to_le_bytes().as_ref()],
+        bump = schedule.bump,
+    )]
+    pub schedule: Account<'info, VestingSchedule>,
+
+    /// Scratch position account used as a callback target.
+    /// For compressed positions, the callback writes encrypted_claimed_amount here
+    /// (the real state lives in Light Protocol and is updated via update_compressed_position_claimed).
+    #[account(mut)]
+    pub position: Account<'info, VestingPosition>,
+
+    #[account(
+        mut,
+        constraint = claim_authorization.is_authorized @ ShadowVestError::ClaimNotAuthorized,
+    )]
+    pub claim_authorization: Account<'info, ClaimAuthorization>,
+
+    #[account(
+        init_if_needed,
+        space = 9,
+        payer = payer,
+        seeds = [b"ArciumSignerAccount"],
+        bump,
+    )]
+    pub sign_pda_account: Account<'info, ArciumSignerAccount>,
+    #[account(address = derive_mxe_pda!())]
+    pub mxe_account: Box<Account<'info, MXEAccount>>,
+    #[account(mut, address = derive_mempool_pda!(mxe_account, ErrorCode::ClusterNotSet))]
+    /// CHECK: mempool_account
+    pub mempool_account: UncheckedAccount<'info>,
+    #[account(mut, address = derive_execpool_pda!(mxe_account, ErrorCode::ClusterNotSet))]
+    /// CHECK: executing_pool
+    pub executing_pool: UncheckedAccount<'info>,
+    #[account(mut, address = derive_comp_pda!(computation_offset, mxe_account, ErrorCode::ClusterNotSet))]
+    /// CHECK: computation_account
+    pub computation_account: UncheckedAccount<'info>,
+    #[account(address = derive_comp_def_pda!(COMP_DEF_OFFSET_PROCESS_CLAIM_V2))]
+    pub comp_def_account: Box<Account<'info, ComputationDefinitionAccount>>,
+    #[account(mut, address = derive_cluster_pda!(mxe_account, ErrorCode::ClusterNotSet))]
+    pub cluster_account: Box<Account<'info, Cluster>>,
+    #[account(mut, address = ARCIUM_FEE_POOL_ACCOUNT_ADDRESS)]
+    pub pool_account: Box<Account<'info, FeePool>>,
+    #[account(mut, address = ARCIUM_CLOCK_ACCOUNT_ADDRESS)]
+    pub clock_account: Box<Account<'info, ClockAccount>>,
+    pub system_program: Program<'info, System>,
+    pub arcium_program: Program<'info, Arcium>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateCompressedPositionClaimed<'info> {
+    #[account(mut)]
+    pub fee_payer: Signer<'info>,
+
+    #[account(
+        seeds = [Organization::SEED_PREFIX, organization.admin.as_ref()],
+        bump = organization.bump,
+    )]
+    pub organization: Account<'info, Organization>,
+
+    #[account(
+        constraint = claim_authorization.is_processed @ ShadowVestError::ClaimNotProcessed,
+        constraint = !claim_authorization.is_withdrawn @ ShadowVestError::AlreadyWithdrawn,
+    )]
+    pub claim_authorization: Account<'info, ClaimAuthorization>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(position_id: u64, nullifier: [u8; 32])]
+pub struct WithdrawCompressed<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(
+        seeds = [Organization::SEED_PREFIX, organization.admin.as_ref()],
+        bump = organization.bump,
+    )]
+    pub organization: Account<'info, Organization>,
+
+    #[account(
+        mut,
+        seeds = [
+            ClaimAuthorization::SEED_PREFIX,
+            organization.key().as_ref(),
+            &position_id.to_le_bytes(),
+            nullifier.as_ref(),
+        ],
+        bump = claim_authorization.bump,
+    )]
+    pub claim_authorization: Account<'info, ClaimAuthorization>,
+
+    /// CHECK: Vault authority PDA
+    #[account(
+        seeds = [b"vault_authority", organization.key().as_ref()],
+        bump,
+    )]
+    pub vault_authority: AccountInfo<'info>,
+
+    #[account(
+        mut,
+        token::authority = vault_authority,
+        seeds = [b"vault", organization.key().as_ref()],
+        bump,
     )]
     pub vault: Account<'info, TokenAccount>,
 
@@ -2144,6 +3034,129 @@ pub struct FetchMetaKeysCallback<'info> {
 }
 
 // ============================================================
+// Account Contexts - Groth16 Proof Verification
+// ============================================================
+
+/// Context for storing a verification key on-chain.
+/// Only the authority (admin) can store VKs for circuit verification.
+#[derive(Accounts)]
+#[instruction(circuit_id: [u8; 32], vk_data: Vec<u8>)]
+pub struct StoreVerificationKey<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        init,
+        payer = authority,
+        space = VerificationKeyAccount::size_with_vk_data(vk_data.len()),
+        seeds = [VerificationKeyAccount::SEED_PREFIX, circuit_id.as_ref()],
+        bump,
+    )]
+    pub vk_account: Account<'info, VerificationKeyAccount>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Context for updating an existing verification key.
+#[derive(Accounts)]
+pub struct UpdateVerificationKey<'info> {
+    pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [VerificationKeyAccount::SEED_PREFIX, vk_account.circuit_id.as_ref()],
+        bump = vk_account.bump,
+        has_one = authority @ ShadowVestError::UnauthorizedAdmin,
+    )]
+    pub vk_account: Account<'info, VerificationKeyAccount>,
+}
+
+/// Context for verifying a withdrawal proof.
+/// Creates a ProofRecord PDA keyed by [b"proof_record", verifier, nullifier].
+#[derive(Accounts)]
+#[instruction(proof: Groth16Proof, public_inputs: WithdrawalPublicInputs)]
+pub struct VerifyWithdrawalProof<'info> {
+    #[account(mut)]
+    pub verifier: Signer<'info>,
+
+    /// The verification key account for the withdrawal circuit
+    #[account(
+        seeds = [VerificationKeyAccount::SEED_PREFIX, vk_account.circuit_id.as_ref()],
+        bump = vk_account.bump,
+    )]
+    pub vk_account: Account<'info, VerificationKeyAccount>,
+
+    /// Proof record PDA - proves this verification happened on-chain.
+    /// Keyed by verifier + nullifier to prevent duplicate records.
+    #[account(
+        init,
+        payer = verifier,
+        space = ProofRecord::SIZE,
+        seeds = [ProofRecord::SEED_PREFIX, verifier.key().as_ref(), public_inputs.nullifier.as_ref()],
+        bump,
+    )]
+    pub proof_record: Account<'info, ProofRecord>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Context for verifying an identity proof.
+/// Creates a ProofRecord keyed by [b"proof_record", verifier, position_commitment].
+#[derive(Accounts)]
+#[instruction(proof: Groth16Proof, public_inputs: IdentityPublicInputs)]
+pub struct VerifyIdentityProof<'info> {
+    #[account(mut)]
+    pub verifier: Signer<'info>,
+
+    /// The verification key account for the identity circuit
+    #[account(
+        seeds = [VerificationKeyAccount::SEED_PREFIX, vk_account.circuit_id.as_ref()],
+        bump = vk_account.bump,
+    )]
+    pub vk_account: Account<'info, VerificationKeyAccount>,
+
+    /// Proof record PDA keyed by position_commitment (used as nullifier for identity proofs)
+    #[account(
+        init,
+        payer = verifier,
+        space = ProofRecord::SIZE,
+        seeds = [ProofRecord::SEED_PREFIX, verifier.key().as_ref(), public_inputs.position_commitment.as_ref()],
+        bump,
+    )]
+    pub proof_record: Account<'info, ProofRecord>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Context for verifying an eligibility proof.
+/// Creates a ProofRecord keyed by [b"proof_record", verifier, nullifier].
+#[derive(Accounts)]
+#[instruction(proof: Groth16Proof, public_inputs: EligibilityPublicInputs)]
+pub struct VerifyEligibilityProof<'info> {
+    #[account(mut)]
+    pub verifier: Signer<'info>,
+
+    /// The verification key account for the eligibility circuit
+    #[account(
+        seeds = [VerificationKeyAccount::SEED_PREFIX, vk_account.circuit_id.as_ref()],
+        bump = vk_account.bump,
+    )]
+    pub vk_account: Account<'info, VerificationKeyAccount>,
+
+    /// Proof record PDA keyed by nullifier (prevents double-verification)
+    #[account(
+        init,
+        payer = verifier,
+        space = ProofRecord::SIZE,
+        seeds = [ProofRecord::SEED_PREFIX, verifier.key().as_ref(), public_inputs.nullifier.as_ref()],
+        bump,
+    )]
+    pub proof_record: Account<'info, ProofRecord>,
+
+    pub system_program: Program<'info, System>,
+}
+
+// ============================================================
 // Events
 // ============================================================
 
@@ -2216,6 +3229,30 @@ pub struct CompressedPositionUpdated {
     pub position_id: u64,
     pub address: [u8; 32],
     pub new_encrypted_claimed_amount: [u8; 32],
+}
+
+#[event]
+pub struct VaultDeposited {
+    pub organization: Pubkey,
+    pub vault: Pubkey,
+    pub depositor: Pubkey,
+    pub amount: u64,
+}
+
+#[event]
+pub struct CompressedClaimProcessed {
+    pub position: Pubkey,
+    pub claim_amount: u64,
+    pub new_encrypted_claimed: [u8; 32],
+    pub is_valid: u64,
+}
+
+#[event]
+pub struct CompressedPositionClaimUpdated {
+    pub organization: Pubkey,
+    pub position_id: u64,
+    pub address: [u8; 32],
+    pub new_is_fully_claimed: bool,
 }
 
 // Phase 4: Events for stealth addresses
@@ -2309,6 +3346,42 @@ pub struct ClaimWithdrawn {
     pub destination: Pubkey,
     pub amount: u64,
     pub token_mint: Pubkey,
+}
+
+// Phase 6: Groth16 Proof Verification Events
+
+#[event]
+pub struct VerificationKeyStored {
+    pub authority: Pubkey,
+    pub circuit_id: [u8; 32],
+    pub vk_account: Pubkey,
+}
+
+#[event]
+pub struct VerificationKeyUpdated {
+    pub circuit_id: [u8; 32],
+    pub vk_account: Pubkey,
+}
+
+#[event]
+pub struct ProofVerified {
+    pub verifier: Pubkey,
+    pub circuit_id: [u8; 32],
+    pub nullifier: [u8; 32],
+    pub proof_type: ProofType,
+    pub verified_at: i64,
+}
+
+/// Type of ZK proof being verified.
+/// Used in events and for circuit identification.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Eq)]
+pub enum ProofType {
+    /// Withdrawal proof - proves entitlement to withdraw from a position
+    Withdrawal,
+    /// Identity proof - proves knowledge of position secret
+    Identity,
+    /// Eligibility proof - proves beneficiary status without revealing identity
+    Eligibility,
 }
 
 // ============================================================

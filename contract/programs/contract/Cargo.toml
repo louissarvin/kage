@@ -30,5 +30,8 @@ arcium-anchor = "=0.6.3"
 light-sdk = { version = "0.18.0", features = ["anchor", "anchor-discriminator", "cpi-context"] }
 light-hasher = "5.0.0"
 
+# Groth16 ZK proof verification using Solana's native alt_bn128 syscalls
+solana-bn254 = "2.2.2"
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

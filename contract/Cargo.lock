@@ -1395,6 +1395,7 @@ dependencies = [
  "arcium-macros",
  "light-hasher",
  "light-sdk",
+ "solana-bn254",
 ]
 
 [[package]]

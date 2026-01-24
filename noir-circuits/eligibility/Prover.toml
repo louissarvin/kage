@@ -1,0 +1,32 @@
+# Eligibility Proof - Example Prover Inputs
+#
+# These are example values for generating a test proof.
+# In production, these would be derived from the employee's
+# stealth key material and the on-chain position data.
+#
+# Computation:
+#   beneficiary_commitment = Poseidon(identity_secret)
+#   nullifier = Poseidon(identity_secret, position_id)
+#   position_commitment = Poseidon(beneficiary_commitment, vesting_amount)
+
+# --- Private Inputs ---
+
+# Secret key material - only known to the beneficiary
+identity_secret = "12345"
+
+# Total vesting amount (used for position binding verification)
+vesting_amount = 50000
+
+# --- Public Inputs ---
+
+# Poseidon(identity_secret) - the on-chain identity commitment
+beneficiary_commitment = "0"
+
+# Poseidon(identity_secret, position_id) - prevents double-claims
+nullifier = "0"
+
+# Identifies which vesting position this proof is for
+position_id = "1"
+
+# Poseidon(beneficiary_commitment, vesting_amount) - binds identity to position
+position_commitment = "0"

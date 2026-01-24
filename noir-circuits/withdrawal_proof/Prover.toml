@@ -1,0 +1,48 @@
+# Withdrawal Proof - Example Prover Inputs
+#
+# These are example values for generating a test proof.
+# In production, these would be computed by the client SDK.
+#
+# Note: Field values are represented as decimal strings.
+# The state_root, nullifier, and withdrawal_commitment must be
+# computed from the private inputs using Poseidon hashing.
+
+# --- Public Inputs ---
+
+# Merkle root of the vesting state tree (computed from leaf + path)
+# This value must be computed by walking up the tree from position_leaf
+# using the vesting_path siblings. For this example with a leaf derived
+# from identity_commitment(42) + amount(1000) and all-zero path,
+# the root is computed iteratively.
+state_root = "0"
+
+# Current epoch identifier
+epoch_id = 1
+
+# Nullifier = Poseidon(identity_secret, epoch_id)
+# Prevents double-withdrawal within the same epoch
+nullifier = "0"
+
+# Withdrawal commitment = Poseidon(claimed_amount)
+# Hides the actual amount being withdrawn
+withdrawal_commitment = "0"
+
+# --- Private Inputs ---
+
+# Total vesting amount for this position (in token smallest unit)
+vesting_amount = 1000
+
+# Secret key material - only known to the beneficiary
+identity_secret = "42"
+
+# Merkle proof path - 32 sibling hashes from leaf to root
+# All zeros represents a position at index 0 in an empty tree
+vesting_path = [
+    "0", "0", "0", "0", "0", "0", "0", "0",
+    "0", "0", "0", "0", "0", "0", "0", "0",
+    "0", "0", "0", "0", "0", "0", "0", "0",
+    "0", "0", "0", "0", "0", "0", "0", "0"
+]
+
+# Amount being claimed in this withdrawal
+claimed_amount = 500

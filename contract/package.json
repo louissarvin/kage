@@ -6,7 +6,8 @@
     "payroll:distribute": "ts-node lib/compressed-payroll.ts",
     "test": "ts-mocha -p ./tsconfig.json -t 120000 tests/**/*.ts",
     "test:payroll": "ts-mocha -p ./tsconfig.json -t 120000 tests/compressed-payroll.ts",
-    "test:cctp": "ts-mocha -p ./tsconfig.json -t 120000 tests/cctp-bridge.ts"
+    "test:cctp": "ts-mocha -p ./tsconfig.json -t 120000 tests/cctp-bridge.ts",
+    "test:noir": "ts-mocha -p ./tsconfig.json -t 120000 tests/noir-proof-generator.ts"
   },
   "dependencies": {
     "@arcium-hq/client": "0.6.3",
@@ -16,8 +17,11 @@
     "@noble/curves": "^1.9.7",
     "@noble/ed25519": "^1.7.5",
     "@noble/hashes": "^1.8.0",
+    "@noir-lang/backend_barretenberg": "^0.36.0",
+    "@noir-lang/noir_js": "^0.36.0",
     "@solana/spl-token": "^0.4.0",
-    "bn.js": "^5.2.1"
+    "bn.js": "^5.2.1",
+    "circomlibjs": "^0.1.7"
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.0",
