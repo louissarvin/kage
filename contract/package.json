@@ -7,13 +7,15 @@
     "test": "ts-mocha -p ./tsconfig.json -t 120000 tests/**/*.ts",
     "test:payroll": "ts-mocha -p ./tsconfig.json -t 120000 tests/compressed-payroll.ts",
     "test:cctp": "ts-mocha -p ./tsconfig.json -t 120000 tests/cctp-bridge.ts",
-    "test:noir": "ts-mocha -p ./tsconfig.json -t 120000 tests/noir-proof-generator.ts"
+    "test:noir": "ts-mocha -p ./tsconfig.json -t 120000 tests/noir-proof-generator.ts",
+    "test:compressed": "ts-mocha -p ./tsconfig.json -t 1000000 tests/compressed-claim-withdraw.ts",
+    "test:claim": "ts-mocha -p ./tsconfig.json -t 1000000 tests/claim-withdraw.ts"
   },
   "dependencies": {
     "@arcium-hq/client": "0.6.3",
     "@coral-xyz/anchor": "0.31.1",
-    "@lightprotocol/compressed-token": "^0.21.0",
-    "@lightprotocol/stateless.js": "^0.21.0",
+    "@lightprotocol/compressed-token": "0.22.1-alpha.8",
+    "@lightprotocol/stateless.js": "0.22.1-alpha.8",
     "@noble/curves": "^1.9.7",
     "@noble/ed25519": "^1.7.5",
     "@noble/hashes": "^1.8.0",
@@ -21,6 +23,7 @@
     "@noir-lang/noir_js": "^0.36.0",
     "@solana/spl-token": "^0.4.0",
     "bn.js": "^5.2.1",
+    "borsh": "^2.0.0",
     "circomlibjs": "^0.1.7"
   },
   "devDependencies": {
