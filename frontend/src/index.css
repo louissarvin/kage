@@ -1,0 +1,212 @@
+@import "tailwindcss";
+/* Font loaded from index.html */
+
+/* Kage Shadow-Centric Design System */
+@theme {
+  /* Primary backgrounds - Dark */
+  --color-kage-void: #0f0f0f;
+  --color-kage-deep: #141414;
+  --color-kage-surface: #181818;
+
+  /* Secondary surfaces - Elevated dark */
+  --color-kage-elevated: #1f1f1f;
+  --color-kage-panel: #252525;
+  --color-kage-subtle: #2a2a2a;
+
+  /* Borders */
+  --color-kage-border: #333333;
+  --color-kage-border-subtle: #262626;
+
+  /* Text - Off-white */
+  --color-kage-text: #F2F2F2;
+  --color-kage-text-muted: #b3b3b3;
+  --color-kage-text-dim: #808080;
+
+  /* Primary Accent - Purple */
+  --color-kage-accent: #8758FF;
+  --color-kage-accent-dim: #6b45d6;
+  --color-kage-accent-glow: rgba(135, 88, 255, 0.15);
+
+  /* Secondary Accent - Cyan */
+  --color-kage-secondary: #5CB8E4;
+  --color-kage-secondary-dim: #4a9bc4;
+  --color-kage-secondary-glow: rgba(92, 184, 228, 0.15);
+
+  /* Warning - Amber */
+  --color-kage-warning: #f59e0b;
+  --color-kage-warning-dim: #d97706;
+
+  /* Error */
+  --color-kage-error: #ef4444;
+  --color-kage-error-dim: #dc2626;
+
+  /* Success */
+  --color-kage-success: #22c55e;
+
+  /* Font */
+  --font-family-sans: 'Poppins', system-ui, -apple-system, sans-serif;
+  --font-family-mono: 'JetBrains Mono', 'SF Mono', monospace;
+}
+
+/* Base styles */
+html {
+  background-color: var(--color-kage-void);
+  color: var(--color-kage-text);
+  font-family: 'Poppins', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*,
+*::before,
+*::after {
+  font-family: 'Poppins', system-ui, -apple-system, sans-serif !important;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: linear-gradient(180deg, var(--color-kage-void) 0%, var(--color-kage-deep) 100%);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-kage-void);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-kage-subtle);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-kage-border);
+}
+
+/* Selection */
+::selection {
+  background: var(--color-kage-accent-glow);
+  color: var(--color-kage-text);
+}
+
+/* Focus states */
+*:focus-visible {
+  outline: 1px solid var(--color-kage-accent-dim);
+  outline-offset: 2px;
+}
+
+/* Wallet adapter overrides */
+.wallet-adapter-button {
+  background: #8758FF !important;
+  color: #F2F2F2 !important;
+  border: none !important;
+  border-radius: 9999px !important;
+  font-family: var(--font-family-sans) !important;
+  font-weight: 500 !important;
+  font-size: 1rem !important;
+  padding: 0.75rem 1rem !important;
+  height: auto !important;
+  line-height: 1.5 !important;
+  transition: all 0.2s ease-out !important;
+}
+
+.wallet-adapter-button:hover {
+  background: #6b45d6 !important;
+  transform: scale(0.98) !important;
+}
+
+.wallet-adapter-button:active {
+  background: #5a3ab8 !important;
+}
+
+.wallet-adapter-button-trigger {
+  background: #8758FF !important;
+}
+
+.wallet-adapter-modal-wrapper {
+  background-color: var(--color-kage-surface) !important;
+  border: 1px solid var(--color-kage-border) !important;
+}
+
+.wallet-adapter-modal-title {
+  color: var(--color-kage-text) !important;
+}
+
+.wallet-adapter-modal-list li {
+  background-color: var(--color-kage-elevated) !important;
+}
+
+.wallet-adapter-modal-list li:hover {
+  background-color: var(--color-kage-panel) !important;
+}
+
+/* Wallet dropdown menu */
+.wallet-adapter-dropdown {
+  position: relative !important;
+}
+
+.wallet-adapter-dropdown-list {
+  position: absolute !important;
+  top: 100% !important;
+  right: 0 !important;
+  margin-top: 8px !important;
+  background: #181818 !important;
+  border-radius: 16px !important;
+  z-index: 100 !important;
+}
+
+.wallet-adapter-dropdown-list-item {
+  padding: 12px 16px !important;
+  color: #b3b3b3 !important;
+  font-size: 14px !important;
+  font-weight: 500 !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+}
+
+.wallet-adapter-dropdown-list-item:hover {
+  background: #252525 !important;
+  color: #F2F2F2 !important;
+}
+
+/* Animations - slow, subtle, purposeful */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-subtle {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.4s ease-out forwards;
+}
+
+.animate-pulse-subtle {
+  animation: pulse-subtle 2s ease-in-out infinite;
+}

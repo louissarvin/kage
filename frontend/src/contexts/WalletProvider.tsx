@@ -1,0 +1,38 @@
+import type { FC, ReactNode } from 'react'
+import { useMemo } from 'react'
+import {
+  ConnectionProvider,
+  WalletProvider as SolanaWalletProvider,
+} from '@solana/wallet-adapter-react'
+import { WalletModalProvider } from '@solana/wallet-adapter-react-ui'
+import {
+  PhantomWalletAdapter,
+  SolflareWalletAdapter,
+  CoinbaseWalletAdapter,
+} from '@solana/wallet-adapter-wallets'
+import { CLUSTER_URL } from '@/lib/constants'
+
+import '@solana/wallet-adapter-react-ui/styles.css'
+
+interface WalletProviderProps {
+  children: ReactNode
+}
+
+export const WalletProvider: FC<WalletProviderProps> = ({ children }) => {
+  const wallets = useMemo(
+    () => [
+      new PhantomWalletAdapter(),
+      new SolflareWalletAdapter(),
+      new CoinbaseWalletAdapter(),
+    ],
+    []
+  )
+
+  return (
+    <ConnectionProvider endpoint={CLUSTER_URL}>
+      <SolanaWalletProvider wallets={wallets} autoConnect>
+        <WalletModalProvider>{children}</WalletModalProvider>
+      </SolanaWalletProvider>
+    </ConnectionProvider>
+  )
+}
