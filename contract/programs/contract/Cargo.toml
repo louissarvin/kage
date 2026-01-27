@@ -27,7 +27,9 @@ arcium-macros = "=0.6.3"
 arcium-anchor = "=0.6.3"
 
 # Light Protocol for ZK Compression (5000x cost reduction)
-light-sdk = { version = "0.18.0", features = ["anchor", "anchor-discriminator", "cpi-context"] }
+# Using V2 API as per official documentation
+light-sdk = { version = "0.19.0", features = ["anchor", "anchor-discriminator", "cpi-context", "v2"] }
+light-sdk-types = { version = "0.19.0", features = ["v2"] }
 light-hasher = "5.0.0"
 
 # Groth16 ZK proof verification using Solana's native alt_bn128 syscalls

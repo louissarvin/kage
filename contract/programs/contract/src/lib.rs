@@ -9,19 +9,20 @@ use arcium_client::idl::arcium::types::{CallbackAccount, CircuitSource, OffChain
 use arcium_macros::circuit_hash;
 
 // Light Protocol imports for compressed positions (5000x cost reduction)
+// Using V2 API as per official documentation
 use light_sdk::{
     account::LightAccount,
-    address::v1::derive_address,
+    address::v2::derive_address,
     cpi::{
-        v1::{CpiAccounts, LightSystemProgramCpi},
-        InvokeLightSystemProgram, LightCpiInstruction,
+        v2::{CpiAccounts, LightSystemProgramCpi},
+        CpiSigner, InvokeLightSystemProgram, LightCpiInstruction,
     },
     derive_light_cpi_signer,
     instruction::{
         account_meta::CompressedAccountMeta,
         PackedAddressTreeInfo, ValidityProof,
     },
-    CpiSigner,
+    PackedAddressTreeInfoExt,
 };
 
 pub mod errors;
@@ -941,6 +942,17 @@ pub mod contract {
             crate::LIGHT_CPI_SIGNER,
         );
 
+        // For V2 API, system accounts are at indices 0-5 (6 accounts)
+        // Tree accounts start at index 6 in remaining_accounts
+        // The address_tree_info.address_merkle_tree_pubkey_index is relative to tree section
+        const V2_SYSTEM_ACCOUNTS_COUNT: usize = 6;
+        let tree_idx = V2_SYSTEM_ACCOUNTS_COUNT + address_tree_info.address_merkle_tree_pubkey_index as usize;
+
+        let address_tree_pubkey = ctx.remaining_accounts
+            .get(tree_idx)
+            .ok_or(ShadowVestError::InvalidAddressTree)?
+            .key();
+
         // Derive unique address for this compressed position
         // Seeds: [prefix, organization, position_id]
         let (address, address_seed) = derive_address(
@@ -949,14 +961,12 @@ pub mod contract {
                 ctx.accounts.organization.key().as_ref(),
                 &position_id.to_le_bytes(),
             ],
-            &address_tree_info
-                .get_tree_pubkey(&cpi_accounts)
-                .map_err(|_| ShadowVestError::InvalidAddressTree)?,
+            &address_tree_pubkey,
             &crate::ID,
         );
 
         // Create new address parameters for the Merkle tree
-        let new_address_params = address_tree_info.into_new_address_params_packed(address_seed);
+        let new_address_params = address_tree_info.into_new_address_params_assigned_packed(address_seed, Some(0));
 
         // Initialize the compressed vesting position
         let mut compressed_position =
@@ -1061,6 +1071,16 @@ pub mod contract {
             crate::LIGHT_CPI_SIGNER,
         );
 
+        // For V2 API, system accounts are at indices 0-5 (6 accounts)
+        // Tree accounts start at index 6 in remaining_accounts
+        // The address_tree_info.address_merkle_tree_pubkey_index is relative to tree section
+        const V2_SYSTEM_ACCOUNTS_COUNT: usize = 6;
+        let tree_idx = V2_SYSTEM_ACCOUNTS_COUNT + address_tree_info.address_merkle_tree_pubkey_index as usize;
+        let address_tree_pubkey = ctx.remaining_accounts
+            .get(tree_idx)
+            .ok_or(ShadowVestError::InvalidAddressTree)?
+            .key();
+
         // Derive unique address for this compressed position
         // Seeds: [prefix, organization, position_id]
         let (address, address_seed) = derive_address(
@@ -1069,14 +1089,12 @@ pub mod contract {
                 ctx.accounts.organization.key().as_ref(),
                 &position_id.to_le_bytes(),
             ],
-            &address_tree_info
-                .get_tree_pubkey(&cpi_accounts)
-                .map_err(|_| ShadowVestError::InvalidAddressTree)?,
+            &address_tree_pubkey,
             &crate::ID,
         );
 
         // Create new address parameters for the Merkle tree
-        let new_address_params = address_tree_info.into_new_address_params_packed(address_seed);
+        let new_address_params = address_tree_info.into_new_address_params_assigned_packed(address_seed, Some(0));
 
         // Initialize the compressed vesting position
         let mut compressed_position =

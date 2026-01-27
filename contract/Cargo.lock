@@ -1395,6 +1395,7 @@ dependencies = [
  "arcium-macros",
  "light-hasher",
  "light-sdk",
+ "light-sdk-types",
  "solana-bn254",
 ]
 
@@ -2478,9 +2479,9 @@ dependencies = [
 
 [[package]]
 name = "light-account-checks"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0785da22cd4a7667583141ca56c790a5c8afa2b22ad2a08204d78881035524e8"
+checksum = "f20b8640212dd450e18d452a247e28d8ba6fdce3c713fd8b69f1e95874d1b7ab"
 dependencies = [
  "solana-account-info",
  "solana-msg",
@@ -2492,9 +2493,9 @@ dependencies = [
 
 [[package]]
 name = "light-compressed-account"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "768ae5a56d8c9cf315d132b3faa5b067f95b3d6a294c579e82f8f0e0bf29c7cc"
+checksum = "a9c3537bbad9df133ca97fc191b164bba93dba1de4da01a92d979ef63f8ce106"
 dependencies = [
  "anchor-lang 0.31.1",
  "borsh 0.10.4",
@@ -2509,9 +2510,9 @@ dependencies = [
 
 [[package]]
 name = "light-compressible"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eff0f0065beb8d16df587b3ea17082e11dea3f67c98813b4bcc061eecd94561f"
+checksum = "00d1dc14271907009f4ca23ae99c49279f7d2acc5a83f0f8d7362834b37e2e16"
 dependencies = [
  "aligned-sized",
  "anchor-lang 0.31.1",
@@ -2522,10 +2523,10 @@ dependencies = [
  "light-hasher",
  "light-macros",
  "light-program-profiler",
- "light-sdk-types",
  "light-zero-copy",
  "pinocchio-pubkey",
  "solana-pubkey",
+ "solana-rent",
  "thiserror 2.0.18",
  "zerocopy",
 ]
@@ -2578,9 +2579,9 @@ dependencies = [
 
 [[package]]
 name = "light-sdk"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6dece106ebd0897bd23a12bad040e0999d93b54447d0473739f91b1f83b1d331"
+checksum = "c7f523c64a6fcdafe6df81d647560770529896f2707be8ffcf048d909b7e2b30"
 dependencies = [
  "anchor-lang 0.31.1",
  "bincode",
@@ -2609,9 +2610,9 @@ dependencies = [
 
 [[package]]
 name = "light-sdk-macros"
-version = "0.18.1"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "315633f6d8bf736dd2f6cec318b662f1dc507f9d66e52ad35d91270870f6acb6"
+checksum = "d3d12bb13b84df21a4871dc0837aafc0b48464d3e9b17e2773c0719b6cc724c5"
 dependencies = [
  "darling",
  "light-hasher",
@@ -2624,9 +2625,9 @@ dependencies = [
 
 [[package]]
 name = "light-sdk-types"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b765f0a39428a137b8d449fa60ba147194cdbff08aa0add598c6047fff2cb7d2"
+checksum = "1d8153b27d057ded7b2b6bbd78c643e3f20bd9a9718ca1a8d4183169ccd812c3"
 dependencies = [
  "anchor-lang 0.31.1",
  "borsh 0.10.4",
