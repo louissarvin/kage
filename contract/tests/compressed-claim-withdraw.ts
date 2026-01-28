@@ -1025,9 +1025,21 @@ describe("Compressed Claim & Withdraw (Devnet E2E)", () => {
       [],
     );
 
-    // Tree accounts for state update: state tree + nullifier queue (V1)
-    const trees = defaultTestStateTreeAccounts();
-    const remainingAccounts = buildLightRemainingAccounts([trees.merkleTree, trees.nullifierQueue], program.programId);
+    // For update operations, use the actual tree info from the compressed account
+    // This ensures we're using the correct trees where the account exists
+    const actualTree = new PublicKey(compressedAccount!.treeInfo.tree);
+    const actualQueue = new PublicKey(compressedAccount!.treeInfo.queue);
+
+    console.log("Update using actual tree info:");
+    console.log("  State tree:", actualTree.toString());
+    console.log("  Queue:", actualQueue.toString());
+
+    // Build remaining accounts with explicit writable marking for update operations
+    const remainingAccounts = buildLightRemainingAccountsForUpdate(
+      actualTree,
+      actualQueue,
+      program.programId
+    );
 
     // On-chain indices are RELATIVE to tree section
     const accountMeta = {
@@ -1297,7 +1309,65 @@ function buildLightRemainingAccounts(
   });
 
   console.log(`Total remaining accounts: ${remainingAccounts.length}`);
-  return remainingAccounts;
+
+  // Normalize to boolean types for Anchor compatibility
+  // SDK may return numbers (0/1) instead of booleans
+  return remainingAccounts.map((acc: any) => ({
+    pubkey: acc.pubkey,
+    isSigner: Boolean(acc.isSigner),
+    isWritable: Boolean(acc.isWritable),
+  }));
+}
+
+/**
+ * Build remaining accounts for Light Protocol CPI UPDATE operations.
+ *
+ * For update operations, the tree accounts need to be explicitly marked as WRITABLE
+ * because Light Protocol needs to:
+ * 1. Nullify the old account hash (write to nullifier queue)
+ * 2. Append the new account hash (write to state tree)
+ *
+ * This function uses the actual tree info from the compressed account
+ * and ensures all tree accounts are marked as writable.
+ */
+function buildLightRemainingAccountsForUpdate(
+  stateTree: PublicKey,
+  nullifierQueue: PublicKey,
+  programId: PublicKey,
+): { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[] {
+  // Use V2 PackedAccounts approach
+  const packedAccounts = new PackedAccounts();
+  const systemAccountConfig = SystemAccountMetaConfig.new(programId);
+  packedAccounts.addSystemAccountsV2(systemAccountConfig);
+
+  // Add tree accounts (these will get indices in remaining_accounts)
+  packedAccounts.insertOrGet(stateTree);
+  packedAccounts.insertOrGet(nullifierQueue);
+
+  const { remainingAccounts } = packedAccounts.toAccountMetas();
+
+  console.log("SDK returned remaining accounts (before modification):");
+  remainingAccounts.forEach((acc: any, i: number) => {
+    const type = i < 6 ? "system" : "tree";
+    console.log(`  [${i}] ${type}: ${acc.pubkey.toString()} (isWritable: ${acc.isWritable}, type: ${typeof acc.isWritable})`);
+  });
+
+  // For update operations, explicitly mark tree accounts as writable
+  // System accounts are at indices 0-5, tree accounts start at index 6
+  // IMPORTANT: Anchor expects boolean values for isSigner and isWritable
+  const modifiedAccounts = remainingAccounts.map((acc: any, index: number) => ({
+    pubkey: acc.pubkey,
+    isSigner: false, // None of these are signers
+    isWritable: index >= 6 ? true : Boolean(acc.isWritable), // Tree accounts (index >= 6) must be writable
+  }));
+
+  console.log("Remaining accounts for UPDATE operation (after modification):");
+  modifiedAccounts.forEach((acc: any, i: number) => {
+    const type = i < 6 ? "system" : "tree";
+    console.log(`  [${i}] ${type}: ${acc.pubkey.toString()} (isWritable: ${acc.isWritable})`);
+  });
+
+  return modifiedAccounts;
 }
 
 /**
