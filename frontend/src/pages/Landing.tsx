@@ -2,31 +2,9 @@ import type { FC } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useWallet } from '@solana/wallet-adapter-react'
 import { motion } from 'framer-motion'
-import { Shield, Lock, Zap } from 'lucide-react'
 import { Header } from '@/components/layout'
 import { Globe } from '@/components/magicui/Globe'
 import shadowImg from '@/assets/shadow.png'
-
-const features = [
-  {
-    icon: Shield,
-    title: 'Privacy-First',
-    description:
-      'Stealth addresses and encrypted amounts protect employee compensation data.',
-  },
-  {
-    icon: Lock,
-    title: 'Zero-Knowledge Proofs',
-    description:
-      'Verify eligibility without revealing sensitive information using Noir ZK circuits.',
-  },
-  {
-    icon: Zap,
-    title: '5000x Cost Reduction',
-    description:
-      'Light Protocol compressed accounts dramatically reduce on-chain storage costs.',
-  },
-]
 
 export const Landing: FC = () => {
   const { connected } = useWallet()
@@ -64,13 +42,14 @@ export const Landing: FC = () => {
           >
             <h1 className="text-[150px] font-semibold tracking-tight text-white leading-[1.1]">
               The
-              <span className="inline-block align-middle mx-3 sm:mx-5 relative w-16 h-16 sm:w-24 sm:h-24 md:w-32 md:h-32 -mt-2">
-                <motion.img
-                  src={shadowImg}
-                  alt="Kage"
-                  className="w-full h-full object-contain"
-                />
-              </span>
+              <motion.div
+                aria-label="Kage"
+                className="inline-block align-middle mx-3 sm:mx-5 w-16 h-16 sm:w-24 sm:h-24 md:w-32 md:h-32 -mt-2 shimmer-img"
+                style={{
+                  '--shimmer-mask': `url(${shadowImg})`,
+                  '--shimmer-bg': `url(${shadowImg})`,
+                } as React.CSSProperties}
+              />
               <span className="text-[150px] text-transparent bg-clip-text bg-gradient-to-br from-white via-white to-white/70">
                 Privacy
               </span>
