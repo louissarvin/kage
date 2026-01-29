@@ -1,6 +1,6 @@
 import type { FC } from 'react'
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { useWallet } from '@solana/wallet-adapter-react'
 import { motion } from 'framer-motion'
 import gsap from 'gsap'
@@ -28,6 +28,14 @@ export const Landing: FC = () => {
   const globeContainerRef = useRef<HTMLDivElement>(null)
   const secondSectionRef = useRef<HTMLDivElement>(null)
   const carouselRef = useRef<HTMLDivElement>(null)
+  const carouselWrapperRef = useRef<HTMLDivElement>(null)
+  const cardRefs = useRef<(HTMLDivElement | null)[]>([])
+  const ctaSectionRef = useRef<HTMLDivElement>(null)
+  const ctaHeadingRef = useRef<HTMLHeadingElement>(null)
+  const ctaContentRef = useRef<HTMLDivElement>(null)
+  const footerRef = useRef<HTMLElement>(null)
+  const newsletterCardRef = useRef<HTMLDivElement>(null)
+  const footerLinksRef = useRef<HTMLDivElement>(null)
 
   // Carousel scroll state
   const [canScrollLeft, setCanScrollLeft] = useState(false)
@@ -150,6 +158,186 @@ export const Landing: FC = () => {
     return () => ctx.revert()
   }, [])
 
+  // Feature cards scroll animation - Phantom-style stacked cards
+  useEffect(() => {
+    const cards = cardRefs.current.filter(Boolean) as HTMLDivElement[]
+    const wrapper = carouselWrapperRef.current
+    if (cards.length === 0 || !wrapper) return
+
+    // Card width + gap = ~420px per card slot
+    const cardSlotWidth = 420
+
+    const ctx = gsap.context(() => {
+      // Set initial state - all cards stacked in center, below viewport
+      // Each card needs to move to overlap at center position
+      // Card 0 stays roughly in place, others move left to stack
+      cards.forEach((card, index) => {
+        // Move each card left to stack on top of first card
+        // index * cardSlotWidth moves it back, then small offset for stacked look
+        const stackOffset = -(index * cardSlotWidth) + (index * 12)
+
+        gsap.set(card, {
+          x: stackOffset,
+          y: 400, // Start below viewport
+          rotateZ: index * 0.5, // Slight rotation
+          scale: 1 - (index * 0.01),
+          zIndex: cards.length - index, // Front card on top
+          opacity: 1,
+        })
+      })
+
+      // Create scroll-triggered animation
+      const tl = gsap.timeline({
+        scrollTrigger: {
+          trigger: wrapper,
+          start: 'top 95%',
+          end: 'top 20%',
+          scrub: 1.2,
+        },
+      })
+
+      // Phase 1: Cards rise up (still stacked) - 0 to 0.5
+      cards.forEach((card, index) => {
+        const stackOffset = -(index * cardSlotWidth) + (index * 12)
+
+        tl.to(
+          card,
+          {
+            y: 0,
+            x: stackOffset,
+            duration: 0.5,
+            ease: 'power2.out',
+          },
+          index * 0.02 // Slight stagger
+        )
+      })
+
+      // Phase 2: Cards spread out to original positions - 0.5 to 1
+      cards.forEach((card, index) => {
+        tl.to(
+          card,
+          {
+            x: 0,
+            rotateZ: 0,
+            scale: 1,
+            zIndex: 1,
+            duration: 0.5,
+            ease: 'power3.out',
+          },
+          0.5 + (index * 0.03)
+        )
+      })
+    }, containerRef)
+
+    return () => ctx.revert()
+  }, [])
+
+  // CTA Section animations
+  useEffect(() => {
+    const ctaHeading = ctaHeadingRef.current
+    const ctaContent = ctaContentRef.current
+    const ctaSection = ctaSectionRef.current
+    if (!ctaHeading || !ctaContent || !ctaSection) return
+
+    const ctx = gsap.context(() => {
+      // Heading animation - fade up
+      gsap.fromTo(
+        ctaHeading,
+        {
+          y: 80,
+          opacity: 0,
+        },
+        {
+          y: 0,
+          opacity: 1,
+          duration: 1,
+          ease: 'power3.out',
+          scrollTrigger: {
+            trigger: ctaSection,
+            start: 'top 70%',
+            toggleActions: 'play none none reverse',
+          },
+        }
+      )
+
+      // Content (paragraph + button) animation - fade up with delay
+      gsap.fromTo(
+        ctaContent.children,
+        {
+          y: 40,
+          opacity: 0,
+        },
+        {
+          y: 0,
+          opacity: 1,
+          duration: 0.8,
+          ease: 'power3.out',
+          stagger: 0.15,
+          scrollTrigger: {
+            trigger: ctaSection,
+            start: 'top 60%',
+            toggleActions: 'play none none reverse',
+          },
+        }
+      )
+    }, containerRef)
+
+    return () => ctx.revert()
+  }, [])
+
+  // Footer animations
+  useEffect(() => {
+    const footer = footerRef.current
+    const newsletterCard = newsletterCardRef.current
+    const footerLinks = footerLinksRef.current
+    if (!footer || !newsletterCard || !footerLinks) return
+
+    const ctx = gsap.context(() => {
+      // Newsletter card - slide up and fade in
+      gsap.fromTo(
+        newsletterCard,
+        {
+          y: 60,
+          opacity: 0,
+        },
+        {
+          y: 0,
+          opacity: 1,
+          duration: 1,
+          ease: 'power3.out',
+          scrollTrigger: {
+            trigger: newsletterCard,
+            start: 'top 85%',
+            toggleActions: 'play none none reverse',
+          },
+        }
+      )
+
+      // Footer links - staggered fade in
+      gsap.fromTo(
+        footerLinks.children,
+        {
+          y: 30,
+          opacity: 0,
+        },
+        {
+          y: 0,
+          opacity: 1,
+          duration: 0.6,
+          ease: 'power2.out',
+          stagger: 0.1,
+          scrollTrigger: {
+            trigger: footerLinks,
+            start: 'top 90%',
+            toggleActions: 'play none none reverse',
+          },
+        }
+      )
+    }, containerRef)
+
+    return () => ctx.revert()
+  }, [])
+
   if (connected) {
     navigate('/dashboard')
     return null
@@ -233,11 +421,8 @@ export const Landing: FC = () => {
         </div>
       </div>
 
-      {/* Second Section - Fades in on scroll */}
-      <div
-        ref={secondSectionRef}
-        className="min-h-screen flex flex-col items-center pt-24 px-4 sm:px-6 lg:px-8 bg-[#000000] relative overflow-hidden"
-      >
+      {/* Second Section - Cards with CTA reveal */}
+      <div ref={secondSectionRef} className="min-h-screen flex flex-col items-center pt-24 px-4 sm:px-6 lg:px-8 bg-[#000000] relative">
         <h2 className="second-section-title text-[60px] md:text-[80px] font-semibold tracking-tight text-kage-muted leading-[1.1] text-center relative z-20">
           Keep everything
           <br />
@@ -283,10 +468,11 @@ export const Landing: FC = () => {
         </div>
 
         {/* Feature Cards Carousel */}
-        <div ref={carouselRef} className="w-full max-w-7xl mt-8 overflow-x-auto scrollbar-hide scroll-smooth relative z-20">
-          <div className="flex gap-5 px-4 pb-8">
+        <div ref={carouselWrapperRef} className="w-full max-w-7xl mt-8 relative z-20" style={{ perspective: '1000px' }}>
+          <div ref={carouselRef} className="overflow-x-auto scrollbar-hide scroll-smooth" style={{ transformStyle: 'preserve-3d' }}>
+            <div className="flex gap-5 px-4 pb-8">
               {/* Card 1 - Privacy Payments */}
-              <div className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-[#181818] p-6 flex flex-col flex-shrink-0">
+              <div ref={el => cardRefs.current[0] = el} className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-[#181818] p-6 flex flex-col flex-shrink-0">
               <h3 className="text-kage-muted text-2xl font-semibold leading-tight">
                 Confidential payments. Complete privacy.
               </h3>
@@ -310,7 +496,7 @@ export const Landing: FC = () => {
             </div>
 
               {/* Card 2 - ZK Proofs */}
-              <div className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-[#5CB8E4]/70 p-6 flex flex-col flex-shrink-0">
+              <div ref={el => cardRefs.current[1] = el} className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-[#5CB8E4]/70 p-6 flex flex-col flex-shrink-0">
               <h3 className="text-white text-2xl font-semibold leading-tight">
                 Zero-knowledge proofs for every transaction.
               </h3>
@@ -350,7 +536,7 @@ export const Landing: FC = () => {
             </div>
 
               {/* Card 3 - Vesting Schedules */}
-              <div className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-kage-accent/70 p-6 flex flex-col flex-shrink-0">
+              <div ref={el => cardRefs.current[2] = el} className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-kage-accent/70 p-6 flex flex-col flex-shrink-0">
               <h3 className="text-white text-2xl font-semibold leading-tight">
                 Private vesting schedules for your team.
               </h3>
@@ -373,7 +559,7 @@ export const Landing: FC = () => {
             </div>
 
               {/* Card 4 - Transaction History */}
-              <div className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-kage-text p-6 flex flex-col flex-shrink-0 overflow-hidden">
+              <div ref={el => cardRefs.current[3] = el} className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-kage-text p-6 flex flex-col flex-shrink-0 overflow-hidden">
               <h3 className="text-[#1d1d1f] text-2xl font-semibold leading-tight">
                 Monitor activity with encrypted history.
               </h3>
@@ -437,7 +623,7 @@ export const Landing: FC = () => {
             </div>
 
               {/* Card 5 - Light Protocol */}
-              <div className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-kage-secondary-dim p-6 flex flex-col flex-shrink-0">
+              <div ref={el => cardRefs.current[4] = el} className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-kage-secondary-dim p-6 flex flex-col flex-shrink-0">
                 <h3 className="text-white text-2xl font-semibold leading-tight">
                   Built on Solana, Light Protocol, Arcium and Noir.
                 </h3>
@@ -463,10 +649,17 @@ export const Landing: FC = () => {
             </div>
           </div>
         </div>
+      </div>
 
       {/* CTA Section */}
-      <div className="min-h-screen flex flex-col items-center justify-center bg-[#000000] px-4">
-        <h2 className="text-[60px] md:text-[80px] font-semibold tracking-tight text-white leading-[1.1] text-center mb-4">
+      <div
+        ref={ctaSectionRef}
+        className="min-h-screen flex flex-col items-center justify-center bg-[#000000] px-4 relative overflow-hidden"
+      >
+        <h2
+          ref={ctaHeadingRef}
+          className="text-[60px] md:text-[80px] font-semibold tracking-tight text-white leading-[1.1] text-center mb-4"
+        >
           Powerful
           <span
             className="inline-block align-middle mx-3 sm:mx-5 w-12 h-12 sm:w-16 sm:h-16 md:w-20 md:h-20 -mt-2"
@@ -481,19 +674,21 @@ export const Landing: FC = () => {
           <br />
           made for everyone
         </h2>
-        <p className="text-xl text-white/70 text-center">
-          Trusted by teams who value privacy and security
-        </p>
-        <button className="group relative p-7 rounded-full bg-[#181818] text-kage-text font-medium text-xl cursor-pointer transition-all duration-300 ease-out hover:bg-kage-accent hover:scale-[0.98] mt-16">
-          Launch App
-        </button>
+        <div ref={ctaContentRef} className="flex flex-col items-center">
+          <p className="text-xl text-white/70 text-center">
+            Trusted by teams who value privacy and security
+          </p>
+          <button className="group relative p-7 rounded-full bg-[#181818] text-kage-text font-medium text-xl cursor-pointer transition-all duration-300 ease-out hover:bg-kage-accent hover:scale-[0.98] mt-16">
+            Launch App
+          </button>
+        </div>
       </div>
 
       {/* Footer */}
-      <footer className="bg-[#000000] px-4 sm:px-6 lg:px-8 py-16">
+      <footer ref={footerRef} className="bg-[#000000] px-4 sm:px-6 lg:px-8 py-16 overflow-hidden">
         <div className="max-w-6xl mx-auto">
           {/* Newsletter Card */}
-          <div className="bg-[#1d1d1f] rounded-3xl p-8 md:p-12 mb-16">
+          <div ref={newsletterCardRef} className="bg-[#1d1d1f] rounded-3xl p-8 md:p-12 mb-16">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-8">
               {/* Logo */}
               <div className="flex-shrink-0">
@@ -530,15 +725,15 @@ export const Landing: FC = () => {
             </div>
 
             {/* Footer Links */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-8 mt-12 pt-12 border-t border-white/10">
+            <div ref={footerLinksRef} className="grid grid-cols-2 md:grid-cols-4 gap-8 mt-12 pt-12 border-t border-white/10">
               {/* Product */}
               <div>
                 <h4 className="text-white/50 text-sm font-medium mb-4">Product</h4>
                 <ul className="space-y-3">
-                  <li><a href="/dashboard" className="text-white hover:text-kage-accent transition-colors">Dashboard</a></li>
-                  <li><a href="/organizations" className="text-white hover:text-kage-accent transition-colors">Organizations</a></li>
-                  <li><a href="/positions" className="text-white hover:text-kage-accent transition-colors">Positions</a></li>
-                  <li><a href="/claim" className="text-white hover:text-kage-accent transition-colors">Claim</a></li>
+                  <li><Link to="/dashboard" className="text-white hover:text-kage-accent transition-colors">Dashboard</Link></li>
+                  <li><Link to="/organizations" className="text-white hover:text-kage-accent transition-colors">Organizations</Link></li>
+                  <li><Link to="/positions" className="text-white hover:text-kage-accent transition-colors">Positions</Link></li>
+                  <li><Link to="/claim" className="text-white hover:text-kage-accent transition-colors">Claim</Link></li>
                 </ul>
               </div>
 
@@ -546,10 +741,10 @@ export const Landing: FC = () => {
               <div>
                 <h4 className="text-white/50 text-sm font-medium mb-4">Resources</h4>
                 <ul className="space-y-3">
-                  <li><a href="#" className="text-white hover:text-kage-accent transition-colors">Docs</a></li>
-                  <li><a href="#" className="text-white hover:text-kage-accent transition-colors">Blog</a></li>
-                  <li><a href="#" className="text-white hover:text-kage-accent transition-colors">Changelog</a></li>
-                  <li><a href="#" className="text-white hover:text-kage-accent transition-colors">Support</a></li>
+                  <li><a href="https://docs.kage.finance" target="_blank" rel="noopener noreferrer" className="text-white hover:text-kage-accent transition-colors">Docs</a></li>
+                  <li><a href="https://blog.kage.finance" target="_blank" rel="noopener noreferrer" className="text-white hover:text-kage-accent transition-colors">Blog</a></li>
+                  <li><a href="https://github.com/kage-finance/changelog" target="_blank" rel="noopener noreferrer" className="text-white hover:text-kage-accent transition-colors">Changelog</a></li>
+                  <li><a href="mailto:support@kage.finance" className="text-white hover:text-kage-accent transition-colors">Support</a></li>
                 </ul>
               </div>
 
@@ -557,9 +752,9 @@ export const Landing: FC = () => {
               <div>
                 <h4 className="text-white/50 text-sm font-medium mb-4">Company</h4>
                 <ul className="space-y-3">
-                  <li><a href="#" className="text-white hover:text-kage-accent transition-colors">About</a></li>
-                  <li><a href="#" className="text-white hover:text-kage-accent transition-colors">Careers</a></li>
-                  <li><a href="#" className="text-white hover:text-kage-accent transition-colors">Press Kit</a></li>
+                  <li><a href="#about" className="text-white hover:text-kage-accent transition-colors">About</a></li>
+                  <li><a href="https://jobs.kage.finance" target="_blank" rel="noopener noreferrer" className="text-white hover:text-kage-accent transition-colors">Careers</a></li>
+                  <li><a href="https://kage.finance/press" target="_blank" rel="noopener noreferrer" className="text-white hover:text-kage-accent transition-colors">Press Kit</a></li>
                 </ul>
               </div>
 
@@ -567,8 +762,8 @@ export const Landing: FC = () => {
               <div>
                 <h4 className="text-white/50 text-sm font-medium mb-4">Socials</h4>
                 <ul className="space-y-3">
-                  <li><a href="#" className="text-white hover:text-kage-accent transition-colors flex items-center gap-2">𝕏 X.com</a></li>
-                  <li><a href="#" className="text-white hover:text-kage-accent transition-colors flex items-center gap-2"><svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>YouTube</a></li>
+                  <li><a href="https://x.com/kaborasolutions" target="_blank" rel="noopener noreferrer" className="text-white hover:text-kage-accent transition-colors flex items-center gap-2">𝕏 X.com</a></li>
+                  <li><a href="https://youtube.com/@kagefinance" target="_blank" rel="noopener noreferrer" className="text-white hover:text-kage-accent transition-colors flex items-center gap-2"><svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>YouTube</a></li>
                 </ul>
               </div>
             </div>

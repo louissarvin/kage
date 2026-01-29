@@ -1,6 +1,6 @@
 import type { FC } from "react";
-import { Link, useLocation } from "react-router-dom";
-import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { motion } from "framer-motion";
 import { Search } from "lucide-react";
@@ -15,7 +15,22 @@ const navItems = [
 
 export const Header: FC = () => {
   const { connected } = useWallet();
+  const { setVisible } = useWalletModal();
   const location = useLocation();
+  const navigate = useNavigate();
+
+  // Check if on landing page
+  const isLandingPage = location.pathname === '/';
+
+  const handleButtonClick = () => {
+    if (isLandingPage) {
+      // On landing page: go to dashboard
+      navigate('/dashboard');
+    } else {
+      // On other pages: open wallet modal
+      setVisible(true);
+    }
+  };
 
   return (
     <header className="fixed top-4 left-0 right-0 z-50">
@@ -60,28 +75,44 @@ export const Header: FC = () => {
               })
             ) : (
               <>
-                <span className="px-4 py-2 rounded-full text-base font-medium text-kage-text-muted  hover:bg-kage-accent/30 cursor-pointer transition-all duration-200">
+                <a
+                  href="#features"
+                  className="px-4 py-2 rounded-full text-base font-medium text-kage-text-muted hover:bg-kage-accent/30 cursor-pointer transition-all duration-200"
+                >
                   Features
-                </span>
-                <span className="px-4 py-2 rounded-full text-base font-medium text-kage-text-muted  hover:bg-kage-accent/30 cursor-pointer transition-all duration-200">
+                </a>
+                <a
+                  href="#about"
+                  className="px-4 py-2 rounded-full text-base font-medium text-kage-text-muted hover:bg-kage-accent/30 cursor-pointer transition-all duration-200"
+                >
                   About
-                </span>
-                <span className="px-4 py-2 rounded-full text-base font-medium text-kage-text-muted hover:bg-kage-accent/30 cursor-pointer transition-all duration-200">
+                </a>
+                <a
+                  href="https://docs.kage.finance"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-4 py-2 rounded-full text-base font-medium text-kage-text-muted hover:bg-kage-accent/30 cursor-pointer transition-all duration-200"
+                >
                   Docs
-                </span>
+                </a>
               </>
             )}
           </motion.nav>
 
-          {/* Right - Search + Wallet Button (no container) */}
+          {/* Right - Search + Launch App Button */}
           <div className="flex items-center gap-4">
             {/* Search */}
             <button className="p-2 text-kage-text-muted hover:text-kage-text transition-colors">
               <Search className="w-5 h-5" />
             </button>
 
-            {/* Wallet Button */}
-            <WalletMultiButton />
+            {/* Dynamic Button */}
+            <button
+              onClick={handleButtonClick}
+              className="px-6 py-3 bg-kage-accent text-white font-medium rounded-full hover:bg-kage-accent-dim transition-all duration-200 hover:scale-[0.98]"
+            >
+              {isLandingPage ? 'Launch App' : 'Select Wallet'}
+            </button>
           </div>
         </div>
       </div>
