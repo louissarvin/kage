@@ -466,7 +466,7 @@ export const Landing: FC = () => {
 
       {/* CTA Section */}
       <div className="min-h-screen flex flex-col items-center justify-center bg-[#000000] px-4">
-        <h2 className="text-[60px] md:text-[80px] font-semibold tracking-tight text-white leading-[1.1] text-center mb-8">
+        <h2 className="text-[60px] md:text-[80px] font-semibold tracking-tight text-white leading-[1.1] text-center mb-4">
           Powerful
           <span
             className="inline-block align-middle mx-3 sm:mx-5 w-12 h-12 sm:w-16 sm:h-16 md:w-20 md:h-20 -mt-2"
@@ -481,16 +481,10 @@ export const Landing: FC = () => {
           <br />
           made for everyone
         </h2>
-        <p className="text-xl md:text-2xl text-white/70 mb-10 text-center">
+        <p className="text-xl md:text-2xl text-white/70 text-center">
           Trusted by teams who value privacy and security
         </p>
-        <button
-          onClick={() => navigate('/dashboard')}
-          className="inline-flex items-center gap-3 px-8 py-4 bg-white text-[#8B5CF6] font-semibold text-lg rounded-full hover:bg-white/90 transition-all duration-300 shadow-lg hover:shadow-xl hover:scale-105"
-        >
-          <svg className="w-6 h-6" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-          </svg>
+        <button className="group relative p-7 rounded-full bg-[#181818] text-kage-text font-medium text-xl cursor-pointer transition-all duration-300 ease-out hover:bg-kage-accent hover:scale-[0.98] mt-16">
           Launch App
         </button>
       </div>
