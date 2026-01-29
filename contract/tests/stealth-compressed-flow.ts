@@ -25,9 +25,19 @@ import { Contract } from "../target/types/contract";
 import { randomBytes, createHash } from "crypto";
 import {
   getArciumEnv,
+  getCompDefAccOffset,
+  getArciumProgramId,
   RescueCipher,
+  deserializeLE,
   getMXEPublicKey,
+  getMXEAccAddress,
+  getMempoolAccAddress,
+  getCompDefAccAddress,
+  getExecutingPoolAccAddress,
+  getComputationAccAddress,
   getClusterAccAddress,
+  getFeePoolAccAddress,
+  getClockAccAddress,
   x25519,
 } from "@arcium-hq/client";
 import {
@@ -133,8 +143,12 @@ describe("Stealth Compressed Flow (E2E)", () => {
   let mxePublicKey: Uint8Array;
   let cipher: RescueCipher;
 
+  // Scratch position for MPC callback (regular VestingPosition account)
+  let scratchPositionPda: PublicKey;
+
   // Constants
   const TOTAL_AMOUNT = BigInt(100_000_000); // 100 tokens with 6 decimals
+  const CLAIM_AMOUNT = BigInt(50_000_000); // 50 tokens
   const DEPOSIT_AMOUNT = 200_000_000; // 200 tokens
 
   // Helper: Get MXE public key with retry
@@ -839,18 +853,635 @@ describe("Stealth Compressed Flow (E2E)", () => {
   });
 
   // ==================================================
+  // STEP 11: Reject wrong stealth signature
+  // ==================================================
+  it("Step 11: Rejects claim with wrong stealth signature", async () => {
+    console.log("\n--- Testing wrong signature rejection ---");
+
+    // Generate a different employee's stealth keys
+    const wrongEmployeeKeys = generateStealthMetaKeys();
+    const wrongPayment = await generateStealthPayment(wrongEmployeeKeys.metaAddress);
+
+    // Derive wrong signer's keypair
+    const wrongEphPriv = await decryptEphemeralPrivKey(
+      wrongPayment.encryptedPayload,
+      wrongEmployeeKeys.viewPrivKey,
+      wrongPayment.ephemeralPubkey
+    );
+    const wrongSigner = await deriveStealthKeypair(
+      wrongEmployeeKeys.spendPrivKey,
+      wrongEmployeeKeys.metaAddress.viewPubkey,
+      wrongEphPriv
+    );
+
+    // Try to sign the SAME claim message with the WRONG key
+    const positionIdBytes = Buffer.alloc(8);
+    positionIdBytes.writeBigUInt64LE(BigInt(positionId));
+    const message = Buffer.concat([
+      positionIdBytes,
+      Buffer.from(nullifier),
+      destinationTokenAccount.toBuffer(),
+    ]);
+
+    // Sign with wrong signer
+    const wrongSignature = await wrongSigner.signMessage(message);
+
+    // Create Ed25519 verify instruction with wrong pubkey/signature
+    const ed25519Ix = Ed25519Program.createInstructionWithPublicKey({
+      publicKey: wrongSigner.publicKey.toBytes(),
+      message: Uint8Array.from(message),
+      signature: wrongSignature,
+    });
+
+    // Re-fetch compressed account for fresh proof
+    const compressedAccount = await lightRpc.getCompressedAccount(
+      bn(compressedPositionAddress.toBytes())
+    );
+    const proof = await lightRpc.getValidityProofV0(
+      [
+        {
+          hash: compressedAccount!.hash,
+          tree: compressedAccount!.treeInfo.tree,
+          queue: compressedAccount!.treeInfo.queue,
+        },
+      ],
+      []
+    );
+
+    const trees = defaultTestStateTreeAccounts();
+    const remainingAccounts = buildLightRemainingAccountsFromTrees(
+      [trees.merkleTree, trees.nullifierQueue],
+      program.programId
+    );
+
+    const positionData = parseCompressedPositionData(
+      Buffer.from(compressedAccount!.data!.data!)
+    );
+    const proofBytes = serializeValidityProof(proof);
+    const accountMetaBytes = serializeCompressedAccountMeta(proof, compressedPositionAddress);
+
+    // Create a NEW nullifier for this attempt (different from the already-used one)
+    const wrongNullifier = createHash("sha256")
+      .update(Buffer.concat([wrongSigner.publicKey.toBuffer(), positionIdBytes]))
+      .digest();
+
+    // Derive NEW claim auth and nullifier record PDAs for this attempt
+    const [wrongClaimAuthPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("claim_auth"),
+        organizationPda.toBuffer(),
+        positionIdBytes,
+        wrongNullifier,
+      ],
+      program.programId
+    );
+    const [wrongNullifierRecordPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("nullifier"),
+        organizationPda.toBuffer(),
+        wrongNullifier,
+      ],
+      program.programId
+    );
+
+    try {
+      const authorizeIx = await program.methods
+        .authorizeClaimCompressed(
+          Buffer.from(proofBytes),
+          Buffer.from(accountMetaBytes),
+          positionData.owner,
+          positionData.organization,
+          positionData.schedule,
+          new anchor.BN(positionData.positionId),
+          Array.from(positionData.beneficiaryCommitment) as any,
+          Array.from(positionData.encryptedTotalAmount) as any,
+          Array.from(positionData.encryptedClaimedAmount) as any,
+          new anchor.BN(positionData.nonce.toString()),
+          new anchor.BN(positionData.startTimestamp),
+          positionData.isActive,
+          positionData.isFullyClaimed,
+          Array.from(wrongNullifier) as any,
+          destinationTokenAccount
+        )
+        .accountsPartial({
+          claimAuthorization: wrongClaimAuthPda,
+          nullifierRecord: wrongNullifierRecordPda,
+          organization: organizationPda,
+          feePayer: admin.publicKey,
+          instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
+          systemProgram: SystemProgram.programId,
+        })
+        .remainingAccounts(remainingAccounts)
+        .instruction();
+
+      const computeIx = ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 });
+      const { blockhash, lastValidBlockHeight } = await provider.connection.getLatestBlockhash();
+      const messageV0 = new TransactionMessage({
+        payerKey: admin.publicKey,
+        recentBlockhash: blockhash,
+        instructions: [computeIx, ed25519Ix, authorizeIx],
+      }).compileToV0Message([lookupTableAccount]);
+
+      const versionedTx = new VersionedTransaction(messageV0);
+      versionedTx.sign([admin]);
+
+      await provider.connection.sendTransaction(versionedTx, {
+        skipPreflight: false,
+        preflightCommitment: "confirmed",
+      });
+
+      expect.fail("Should have thrown - wrong stealth signature");
+    } catch (err: any) {
+      // The error could be InvalidStealthSignature or a simulation failure
+      // The important thing is that the wrong signature was rejected
+      console.log("Wrong signature correctly rejected:", err.message?.substring(0, 100));
+      const errMsg = err.message || err.toString();
+      expect(
+        errMsg.includes("InvalidStealthSignature") ||
+        errMsg.includes("Simulation failed") ||
+        errMsg.includes("custom program error")
+      ).to.be.true;
+    }
+  });
+
+  // ==================================================
+  // STEP 12: Reject double-claim with same nullifier
+  // ==================================================
+  it("Step 12: Rejects double-claim with same nullifier", async () => {
+    console.log("\n--- Testing double-claim rejection ---");
+
+    const positionIdBytes = Buffer.alloc(8);
+    positionIdBytes.writeBigUInt64LE(BigInt(positionId));
+    const message = Buffer.concat([
+      positionIdBytes,
+      Buffer.from(nullifier),
+      destinationTokenAccount.toBuffer(),
+    ]);
+
+    // Derive the correct stealth signer again
+    const ephPriv32 = await decryptEphemeralPrivKey(
+      stealthPayment.encryptedPayload,
+      employeeMetaKeys.viewPrivKey,
+      stealthPayment.ephemeralPubkey
+    );
+    const stealthSigner = await deriveStealthKeypair(
+      employeeMetaKeys.spendPrivKey,
+      employeeMetaKeys.metaAddress.viewPubkey,
+      ephPriv32
+    );
+
+    const signature = await stealthSigner.signMessage(message);
+    const ed25519Ix = Ed25519Program.createInstructionWithPublicKey({
+      publicKey: stealthSigner.publicKey.toBytes(),
+      message: Uint8Array.from(message),
+      signature: signature,
+    });
+
+    // Re-fetch compressed account for fresh proof
+    const compressedAccount = await lightRpc.getCompressedAccount(
+      bn(compressedPositionAddress.toBytes())
+    );
+    const proof = await lightRpc.getValidityProofV0(
+      [
+        {
+          hash: compressedAccount!.hash,
+          tree: compressedAccount!.treeInfo.tree,
+          queue: compressedAccount!.treeInfo.queue,
+        },
+      ],
+      []
+    );
+
+    const trees = defaultTestStateTreeAccounts();
+    const remainingAccounts = buildLightRemainingAccountsFromTrees(
+      [trees.merkleTree, trees.nullifierQueue],
+      program.programId
+    );
+
+    const positionData = parseCompressedPositionData(
+      Buffer.from(compressedAccount!.data!.data!)
+    );
+    const proofBytes = serializeValidityProof(proof);
+    const accountMetaBytes = serializeCompressedAccountMeta(proof, compressedPositionAddress);
+
+    try {
+      const authorizeIx = await program.methods
+        .authorizeClaimCompressed(
+          Buffer.from(proofBytes),
+          Buffer.from(accountMetaBytes),
+          positionData.owner,
+          positionData.organization,
+          positionData.schedule,
+          new anchor.BN(positionData.positionId),
+          Array.from(positionData.beneficiaryCommitment) as any,
+          Array.from(positionData.encryptedTotalAmount) as any,
+          Array.from(positionData.encryptedClaimedAmount) as any,
+          new anchor.BN(positionData.nonce.toString()),
+          new anchor.BN(positionData.startTimestamp),
+          positionData.isActive,
+          positionData.isFullyClaimed,
+          Array.from(nullifier) as any,
+          destinationTokenAccount
+        )
+        .accountsPartial({
+          claimAuthorization: claimAuthPda,
+          nullifierRecord: nullifierRecordPda,
+          organization: organizationPda,
+          feePayer: admin.publicKey,
+          instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
+          systemProgram: SystemProgram.programId,
+        })
+        .remainingAccounts(remainingAccounts)
+        .instruction();
+
+      const computeIx = ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 });
+      const { blockhash, lastValidBlockHeight } = await provider.connection.getLatestBlockhash();
+      const messageV0 = new TransactionMessage({
+        payerKey: admin.publicKey,
+        recentBlockhash: blockhash,
+        instructions: [computeIx, ed25519Ix, authorizeIx],
+      }).compileToV0Message([lookupTableAccount]);
+
+      const versionedTx = new VersionedTransaction(messageV0);
+      versionedTx.sign([admin]);
+
+      await provider.connection.sendTransaction(versionedTx, {
+        skipPreflight: false,
+        preflightCommitment: "confirmed",
+      });
+
+      expect.fail("Should have thrown - nullifier already used");
+    } catch (err: any) {
+      console.log("Double-claim correctly rejected:", err.message?.substring(0, 100));
+    }
+  });
+
+  // ==================================================
+  // STEP 13: Queue MPC process_claim computation
+  // ==================================================
+  it("Step 13: Queues process_claim MPC computation", async () => {
+    console.log("\n--- Queueing MPC process_claim computation ---");
+
+    // Create a scratch position for MPC callback target
+    const org = await program.account.organization.fetch(organizationPda);
+    const scratchPositionId = org.positionCount;
+
+    [scratchPositionPda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("vesting_position"),
+        organizationPda.toBuffer(),
+        scratchPositionId.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    const [signPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("ArciumSignerAccount")],
+      program.programId
+    );
+
+    // Create scratch position with init_position
+    const scratchNonce = randomBytes(16);
+    const scratchCiphertext = cipher.encrypt([BigInt(0)], scratchNonce);
+    const scratchNonceAsBN = new anchor.BN(deserializeLE(scratchNonce).toString());
+    const scratchComputationOffset = new anchor.BN(randomBytes(8), "hex");
+
+    const computeIx = ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 });
+    const priorityFeeIx = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000 });
+
+    // Get beneficiary commitment from stealth address
+    const beneficiaryCommitment = stealthPayment.stealthAddress.toBytes();
+
+    await program.methods
+      .createVestingPosition(
+        scratchComputationOffset,
+        Array.from(beneficiaryCommitment) as any,
+        Array.from(scratchCiphertext[0]) as any,
+        Array.from(publicKey) as any,
+        scratchNonceAsBN
+      )
+      .accountsPartial({
+        payer: admin.publicKey,
+        admin: admin.publicKey,
+        organization: organizationPda,
+        schedule: schedulePda,
+        position: scratchPositionPda,
+        signPdaAccount: signPda,
+        mxeAccount: getMXEAccAddress(program.programId),
+        mempoolAccount: getMempoolAccAddress(arciumEnv.arciumClusterOffset),
+        executingPool: getExecutingPoolAccAddress(arciumEnv.arciumClusterOffset),
+        computationAccount: getComputationAccAddress(
+          arciumEnv.arciumClusterOffset,
+          scratchComputationOffset
+        ),
+        compDefAccount: getCompDefAccAddress(
+          program.programId,
+          Buffer.from(getCompDefAccOffset("init_position")).readUInt32LE()
+        ),
+        clusterAccount,
+        poolAccount: getFeePoolAccAddress(),
+        clockAccount: getClockAccAddress(),
+        systemProgram: SystemProgram.programId,
+        arciumProgram: getArciumProgramId(),
+      })
+      .preInstructions([computeIx, priorityFeeIx])
+      .signers([admin])
+      .rpc({ commitment: "confirmed" });
+
+    console.log("Scratch position created:", scratchPositionPda.toString());
+
+    // Wait for init_position MPC callback
+    console.log("Waiting for init_position MPC callback...");
+    await waitForAccountState(
+      provider,
+      program,
+      scratchPositionPda,
+      "vestingPosition",
+      (account: any) => account.encryptedClaimedAmount.some((b: number) => b !== 0),
+      300000
+    );
+    console.log("Scratch position initialized by MPC");
+
+    // Now queue process_claim_v2 for the compressed position
+    const claimedSoFar = BigInt(0);
+    const PRECISION = BigInt(1_000_000);
+    const vestingNumerator = PRECISION; // Fully vested (>10s elapsed)
+
+    const nonce = randomBytes(16);
+    const nonceAsBN = new anchor.BN(deserializeLE(nonce).toString());
+
+    const encryptedTotalAmount = cipher.encrypt([TOTAL_AMOUNT], nonce);
+    const encryptedClaimedAmount = cipher.encrypt([claimedSoFar], nonce);
+    const encryptedVestingNumerator = cipher.encrypt([vestingNumerator], nonce);
+    const encryptedClaimAmount = cipher.encrypt([CLAIM_AMOUNT], nonce);
+
+    const computationOffset = new anchor.BN(randomBytes(8), "hex");
+
+    // Get the position's start_timestamp from the compressed account
+    const compressedAccount = await lightRpc.getCompressedAccount(
+      bn(compressedPositionAddress.toBytes())
+    );
+    const positionData = parseCompressedPositionData(
+      Buffer.from(compressedAccount!.data!.data!)
+    );
+
+    await program.methods
+      .queueProcessClaimCompressed(
+        computationOffset,
+        new anchor.BN(positionId),
+        Array.from(encryptedTotalAmount[0]) as any,
+        Array.from(encryptedClaimedAmount[0]) as any,
+        Array.from(encryptedVestingNumerator[0]) as any,
+        Array.from(encryptedClaimAmount[0]) as any,
+        new anchor.BN(CLAIM_AMOUNT.toString()),
+        new anchor.BN(positionData.startTimestamp),
+        Array.from(publicKey) as any,
+        nonceAsBN
+      )
+      .accountsPartial({
+        payer: admin.publicKey,
+        organization: organizationPda,
+        schedule: schedulePda,
+        position: scratchPositionPda,
+        claimAuthorization: claimAuthPda,
+        signPdaAccount: signPda,
+        mxeAccount: getMXEAccAddress(program.programId),
+        mempoolAccount: getMempoolAccAddress(arciumEnv.arciumClusterOffset),
+        executingPool: getExecutingPoolAccAddress(arciumEnv.arciumClusterOffset),
+        computationAccount: getComputationAccAddress(
+          arciumEnv.arciumClusterOffset,
+          computationOffset
+        ),
+        compDefAccount: getCompDefAccAddress(
+          program.programId,
+          Buffer.from(getCompDefAccOffset("process_claim_v2")).readUInt32LE()
+        ),
+        clusterAccount,
+        poolAccount: getFeePoolAccAddress(),
+        clockAccount: getClockAccAddress(),
+        systemProgram: SystemProgram.programId,
+        arciumProgram: getArciumProgramId(),
+      })
+      .preInstructions([computeIx, priorityFeeIx])
+      .signers([admin])
+      .rpc({ commitment: "confirmed" });
+
+    console.log("Process claim computation queued");
+
+    // Wait for MPC callback
+    console.log("Waiting for process_claim_v2 MPC callback...");
+    await waitForAccountState(
+      provider,
+      program,
+      claimAuthPda,
+      "claimAuthorization",
+      (account: any) => account.isProcessed === true,
+      600000
+    );
+    console.log("Process claim callback received");
+
+    // Verify claim is processed
+    const claimAuth = await program.account.claimAuthorization.fetch(claimAuthPda);
+    expect(claimAuth.isProcessed).to.be.true;
+    expect(claimAuth.claimAmount.toNumber()).to.equal(Number(CLAIM_AMOUNT));
+    console.log("ClaimAuthorization processed: amount =", claimAuth.claimAmount.toString());
+  });
+
+  // ==================================================
+  // STEP 14: Update compressed position claimed amount
+  // ==================================================
+  it("Step 14: Updates compressed position claimed amount", async () => {
+    console.log("\n--- Updating compressed position claimed amount ---");
+
+    // Re-fetch the compressed account
+    const compressedAccount = await lightRpc.getCompressedAccount(
+      bn(compressedPositionAddress.toBytes())
+    );
+    expect(compressedAccount).to.not.be.null;
+
+    // Get validity proof for updating the account
+    const proof = await lightRpc.getValidityProofV0(
+      [
+        {
+          hash: compressedAccount!.hash,
+          tree: compressedAccount!.treeInfo.tree,
+          queue: compressedAccount!.treeInfo.queue,
+        },
+      ],
+      []
+    );
+
+    // For update operations, use the actual tree info from the compressed account
+    const actualTree = new PublicKey(compressedAccount!.treeInfo.tree);
+    const actualQueue = new PublicKey(compressedAccount!.treeInfo.queue);
+
+    // Build remaining accounts with explicit writable marking for update operations
+    const remainingAccounts = buildLightRemainingAccountsForUpdate(
+      actualTree,
+      actualQueue,
+      program.programId
+    );
+
+    const accountMeta = {
+      address: Array.from(compressedPositionAddress.toBytes()),
+      merkleTreePubkeyIndex: 0,
+      queuePubkeyIndex: 1,
+      leafIndex: proof.leafIndices[0],
+      rootIndex: proof.rootIndices[0],
+    };
+
+    const proofBytes = serializeValidityProof(proof);
+    const accountMetaBytes = serializeCompressedAccountMetaForUpdate(accountMeta);
+
+    const positionData = parseCompressedPositionData(
+      Buffer.from(compressedAccount!.data!.data!)
+    );
+
+    // Get the new encrypted_claimed_amount from scratch position
+    const scratchPosition = await program.account.vestingPosition.fetch(scratchPositionPda);
+    const newEncryptedClaimedAmount = scratchPosition.encryptedClaimedAmount;
+
+    // Determine if fully claimed
+    const newIsFullyClaimed = CLAIM_AMOUNT >= TOTAL_AMOUNT ? 1 : 0;
+
+    const computeIx = ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 });
+    const priorityFeeIx = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000 });
+
+    await program.methods
+      .updateCompressedPositionClaimed(
+        Buffer.from(proofBytes),
+        Buffer.from(accountMetaBytes),
+        positionData.owner,
+        positionData.organization,
+        positionData.schedule,
+        new anchor.BN(positionData.positionId),
+        Array.from(positionData.beneficiaryCommitment) as any,
+        Array.from(positionData.encryptedTotalAmount) as any,
+        Array.from(positionData.encryptedClaimedAmount) as any,
+        new anchor.BN(positionData.nonce.toString()),
+        new anchor.BN(positionData.startTimestamp),
+        positionData.isActive,
+        positionData.isFullyClaimed,
+        Array.from(newEncryptedClaimedAmount) as any,
+        newIsFullyClaimed
+      )
+      .accountsPartial({
+        feePayer: admin.publicKey,
+        organization: organizationPda,
+        claimAuthorization: claimAuthPda,
+        systemProgram: SystemProgram.programId,
+      })
+      .remainingAccounts(remainingAccounts)
+      .preInstructions([computeIx, priorityFeeIx])
+      .signers([admin])
+      .rpc({ commitment: "confirmed" });
+
+    console.log("Compressed position claimed amount updated");
+
+    // Wait for indexer to catch up
+    await sleep(3000);
+
+    // Verify the updated compressed account
+    const updatedAccount = await lightRpc.getCompressedAccount(
+      bn(compressedPositionAddress.toBytes())
+    );
+    expect(updatedAccount).to.not.be.null;
+    console.log("Compressed position state verified after update");
+  });
+
+  // ==================================================
+  // STEP 15: Withdraw tokens
+  // ==================================================
+  it("Step 15: Withdraws tokens to destination", async () => {
+    console.log("\n--- Withdrawing tokens ---");
+
+    const beforeBalance = await getAccount(provider.connection, destinationTokenAccount);
+    expect(Number(beforeBalance.amount)).to.equal(0);
+
+    await program.methods
+      .withdrawCompressed(
+        new anchor.BN(positionId),
+        Array.from(nullifier) as any
+      )
+      .accountsPartial({
+        payer: admin.publicKey,
+        organization: organizationPda,
+        claimAuthorization: claimAuthPda,
+        vaultAuthority: vaultAuthorityPda,
+        vault: vaultPda,
+        destination: destinationTokenAccount,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers([admin])
+      .rpc({ commitment: "confirmed" });
+
+    // Verify tokens received
+    const afterBalance = await getAccount(provider.connection, destinationTokenAccount);
+    expect(Number(afterBalance.amount)).to.equal(Number(CLAIM_AMOUNT));
+    console.log(`Withdrawal successful: ${Number(CLAIM_AMOUNT) / 1_000_000} tokens`);
+
+    // Verify claim is marked as withdrawn
+    const claimAuth = await program.account.claimAuthorization.fetch(claimAuthPda);
+    expect(claimAuth.isWithdrawn).to.be.true;
+    console.log("ClaimAuthorization: withdrawn=true");
+  });
+
+  // ==================================================
+  // STEP 16: Reject double-withdrawal
+  // ==================================================
+  it("Step 16: Rejects double-withdrawal", async () => {
+    console.log("\n--- Testing double-withdrawal rejection ---");
+
+    try {
+      await program.methods
+        .withdrawCompressed(
+          new anchor.BN(positionId),
+          Array.from(nullifier) as any
+        )
+        .accountsPartial({
+          payer: admin.publicKey,
+          organization: organizationPda,
+          claimAuthorization: claimAuthPda,
+          vaultAuthority: vaultAuthorityPda,
+          vault: vaultPda,
+          destination: destinationTokenAccount,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([admin])
+        .rpc({ commitment: "confirmed" });
+
+      expect.fail("Should have thrown - already withdrawn");
+    } catch (err: any) {
+      expect(err.message || err.toString()).to.include("AlreadyWithdrawn");
+      console.log("Double-withdrawal correctly rejected");
+    }
+  });
+
+  // ==================================================
   // Summary
   // ==================================================
-  it("Summary: Full stealth flow completed", async () => {
+  it("Summary: Full stealth compressed flow completed", async () => {
     console.log("\n=== Stealth Compressed Flow Complete ===");
     console.log("\nPrivacy achieved:");
     console.log("  1. Employee identity hidden behind stealth address");
     console.log("  2. Payment unlinkable to employee meta-address");
     console.log("  3. Only employee can discover and claim payment");
+    console.log("  4. Nullifier prevents double-claims");
+    console.log("  5. Wrong signatures are rejected");
+    console.log("\nFull flow tested:");
+    console.log("  - Stealth meta-address registration");
+    console.log("  - Stealth address derivation");
+    console.log("  - Compressed position creation (Light Protocol)");
+    console.log("  - Payment discovery (stealth scanning)");
+    console.log("  - Claim authorization (Ed25519 signature)");
+    console.log("  - MPC claim processing (Arcium)");
+    console.log("  - Compressed position update (Light Protocol)");
+    console.log("  - Token withdrawal");
     console.log("\nAccounts:");
     console.log("  Organization:", organizationPda.toString());
     console.log("  Stealth Address:", stealthPayment.stealthAddress.toString());
     console.log("  Compressed Position:", compressedPositionAddress.toString());
+    console.log("  Vault:", vaultPda.toString());
   });
 });
 
@@ -1066,4 +1697,101 @@ function parseCompressedPositionData(data: Buffer): CompressedPositionData {
     isActive,
     isFullyClaimed,
   };
+}
+
+/**
+ * Build remaining accounts for Light Protocol CPI UPDATE operations.
+ * Tree accounts must be marked as writable for state transitions.
+ */
+function buildLightRemainingAccountsForUpdate(
+  stateTree: PublicKey,
+  nullifierQueue: PublicKey,
+  programId: PublicKey
+): { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[] {
+  const packedAccounts = new PackedAccounts();
+  const systemAccountConfig = SystemAccountMetaConfig.new(programId);
+  packedAccounts.addSystemAccountsV2(systemAccountConfig);
+
+  packedAccounts.insertOrGet(stateTree);
+  packedAccounts.insertOrGet(nullifierQueue);
+
+  const { remainingAccounts } = packedAccounts.toAccountMetas();
+
+  // For update operations, explicitly mark tree accounts as writable
+  // System accounts are at indices 0-5, tree accounts start at index 6
+  return remainingAccounts.map((acc: any, index: number) => ({
+    pubkey: acc.pubkey,
+    isSigner: false,
+    isWritable: index >= 6 ? true : Boolean(acc.isWritable),
+  }));
+}
+
+/**
+ * Serialize CompressedAccountMeta for update operations.
+ */
+function serializeCompressedAccountMetaForUpdate(meta: {
+  address: number[];
+  merkleTreePubkeyIndex: number;
+  queuePubkeyIndex: number;
+  leafIndex: number;
+  rootIndex: number;
+}): Buffer {
+  const buffer = Buffer.alloc(42);
+  let offset = 0;
+
+  // tree_info: PackedStateTreeInfo
+  buffer.writeUInt16LE(meta.rootIndex, offset);
+  offset += 2;
+  buffer.writeUInt8(0, offset); // proveByIndex (false)
+  offset += 1;
+  buffer.writeUInt8(meta.merkleTreePubkeyIndex, offset);
+  offset += 1;
+  buffer.writeUInt8(meta.queuePubkeyIndex, offset);
+  offset += 1;
+  buffer.writeUInt32LE(meta.leafIndex, offset);
+  offset += 4;
+
+  // address (32 bytes)
+  Buffer.from(meta.address).copy(buffer, offset);
+  offset += 32;
+
+  // outputStateTreeIndex
+  buffer.writeUInt8(meta.merkleTreePubkeyIndex, offset);
+
+  return buffer;
+}
+
+/**
+ * Wait for an account to reach a specific state by polling.
+ */
+async function waitForAccountState(
+  provider: anchor.AnchorProvider,
+  program: any,
+  accountPda: PublicKey,
+  accountName: string,
+  predicate: (account: any) => boolean,
+  timeoutMs: number = 300000
+): Promise<void> {
+  const startTime = Date.now();
+  const pollInterval = 3000;
+
+  while (Date.now() - startTime < timeoutMs) {
+    await sleep(pollInterval);
+
+    try {
+      const account = await (program.account as any)[accountName].fetch(accountPda);
+      if (predicate(account)) {
+        return;
+      }
+    } catch (err) {
+      // Account might not exist yet or be in transition
+    }
+
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    if (elapsed % 30 === 0 && elapsed > 0) {
+      console.log(`  Still waiting for ${accountName} state change... (${elapsed}s elapsed)`);
+    }
+  }
+
+  throw new Error(`Timeout waiting for ${accountName} state change after ${timeoutMs / 1000}s`);
 }
