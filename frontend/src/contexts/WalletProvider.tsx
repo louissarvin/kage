@@ -8,7 +8,6 @@ import { WalletModalProvider } from '@solana/wallet-adapter-react-ui'
 import {
   PhantomWalletAdapter,
   SolflareWalletAdapter,
-  CoinbaseWalletAdapter,
 } from '@solana/wallet-adapter-wallets'
 import { CLUSTER_URL } from '@/lib/constants'
 
@@ -23,7 +22,6 @@ export const WalletProvider: FC<WalletProviderProps> = ({ children }) => {
     () => [
       new PhantomWalletAdapter(),
       new SolflareWalletAdapter(),
-      new CoinbaseWalletAdapter(),
     ],
     []
   )

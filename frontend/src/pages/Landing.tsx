@@ -477,17 +477,104 @@ export const Landing: FC = () => {
               backgroundPosition: 'center',
             }}
           />
-          tools
+          apps
           <br />
           made for everyone
         </h2>
-        <p className="text-xl md:text-2xl text-white/70 text-center">
+        <p className="text-xl text-white/70 text-center">
           Trusted by teams who value privacy and security
         </p>
         <button className="group relative p-7 rounded-full bg-[#181818] text-kage-text font-medium text-xl cursor-pointer transition-all duration-300 ease-out hover:bg-kage-accent hover:scale-[0.98] mt-16">
           Launch App
         </button>
       </div>
+
+      {/* Footer */}
+      <footer className="bg-[#000000] px-4 sm:px-6 lg:px-8 py-16">
+        <div className="max-w-6xl mx-auto">
+          {/* Newsletter Card */}
+          <div className="bg-[#1d1d1f] rounded-3xl p-8 md:p-12 mb-16">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-8">
+              {/* Logo */}
+              <div className="flex-shrink-0">
+                <span
+                  className="inline-block w-20 h-20 mb-20"
+                  style={{
+                    backgroundImage: `url(${shadowImg})`,
+                    backgroundSize: 'contain',
+                    backgroundRepeat: 'no-repeat',
+                    backgroundPosition: 'center',
+                  }}
+                />
+              </div>
+              
+              {/* Newsletter Form */}
+              <div className="flex-1 max-w-xl">
+                <h3 className="text-3xl md:text-4xl font-semibold text-white mb-3">
+                  Enter your email
+                </h3>
+                <p className="text-white/60 mb-6">
+                  Sign up for our newsletter and join the growing Kage community.
+                </p>
+                <div className="flex gap-3">
+                  <input
+                    type="email"
+                    placeholder="your@email.com"
+                    className="flex-1 px-5 py-3 bg-[#2d2d2f] rounded-full text-white placeholder:text-white/40 focus:outline-none transition-colors"
+                  />
+                  <button className="px-6 py-3 bg-white text-[#1d1d1f] font-medium rounded-full hover:bg-kage-accent hover:text-white cursor-pointer transition-colors">
+                    Sign up
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer Links */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-8 mt-12 pt-12 border-t border-white/10">
+              {/* Product */}
+              <div>
+                <h4 className="text-white/50 text-sm font-medium mb-4">Product</h4>
+                <ul className="space-y-3">
+                  <li><a href="/dashboard" className="text-white hover:text-kage-accent transition-colors">Dashboard</a></li>
+                  <li><a href="/organizations" className="text-white hover:text-kage-accent transition-colors">Organizations</a></li>
+                  <li><a href="/positions" className="text-white hover:text-kage-accent transition-colors">Positions</a></li>
+                  <li><a href="/claim" className="text-white hover:text-kage-accent transition-colors">Claim</a></li>
+                </ul>
+              </div>
+
+              {/* Resources */}
+              <div>
+                <h4 className="text-white/50 text-sm font-medium mb-4">Resources</h4>
+                <ul className="space-y-3">
+                  <li><a href="#" className="text-white hover:text-kage-accent transition-colors">Docs</a></li>
+                  <li><a href="#" className="text-white hover:text-kage-accent transition-colors">Blog</a></li>
+                  <li><a href="#" className="text-white hover:text-kage-accent transition-colors">Changelog</a></li>
+                  <li><a href="#" className="text-white hover:text-kage-accent transition-colors">Support</a></li>
+                </ul>
+              </div>
+
+              {/* Company */}
+              <div>
+                <h4 className="text-white/50 text-sm font-medium mb-4">Company</h4>
+                <ul className="space-y-3">
+                  <li><a href="#" className="text-white hover:text-kage-accent transition-colors">About</a></li>
+                  <li><a href="#" className="text-white hover:text-kage-accent transition-colors">Careers</a></li>
+                  <li><a href="#" className="text-white hover:text-kage-accent transition-colors">Press Kit</a></li>
+                </ul>
+              </div>
+
+              {/* Socials */}
+              <div>
+                <h4 className="text-white/50 text-sm font-medium mb-4">Socials</h4>
+                <ul className="space-y-3">
+                  <li><a href="#" className="text-white hover:text-kage-accent transition-colors flex items-center gap-2">𝕏 X.com</a></li>
+                  <li><a href="#" className="text-white hover:text-kage-accent transition-colors flex items-center gap-2"><svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>YouTube</a></li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </footer>
     </div>
   )
 }
