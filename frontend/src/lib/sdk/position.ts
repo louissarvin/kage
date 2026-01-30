@@ -35,16 +35,22 @@ export interface CreatePositionParams {
 
 /**
  * Create a beneficiary commitment from stealth public keys
- * This is a hash of the meta-address that the employee can prove they control
+ *
+ * The commitment is the raw 32-byte Ed25519 public key (metaSpendPub).
+ * This is used for signature verification in authorize_claim.
+ *
+ * NOTE: metaSpendPub is the stealth spend public key (base58 encoded).
+ * The beneficiary proves ownership by signing with the corresponding private key.
  */
 export async function createBeneficiaryCommitment(
   metaSpendPub: string,
-  metaViewPub: string
+  _metaViewPub: string // Kept for API compatibility, but not used in commitment
 ): Promise<Uint8Array> {
-  const encoder = new TextEncoder()
-  const data = encoder.encode(metaSpendPub + metaViewPub)
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
-  return new Uint8Array(hashBuffer)
+  // Import bs58 dynamically to decode the base58 public key
+  const bs58 = await import('bs58')
+  // Decode base58 public key to raw 32-byte array
+  // The metaSpendPub is an Ed25519 public key that can verify signatures
+  return bs58.default.decode(metaSpendPub)
 }
 
 /**

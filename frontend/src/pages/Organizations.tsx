@@ -449,45 +449,135 @@ interface ManageSchedulesModalProps {
   onChainSchedules: OnChainSchedule[]
 }
 
+// Time unit options
+type TimeUnit = 'seconds' | 'minutes' | 'hours' | 'days' | 'months'
+
+const TIME_UNIT_MULTIPLIERS: Record<TimeUnit, number> = {
+  seconds: 1,
+  minutes: 60,
+  hours: 60 * 60,
+  days: 24 * 60 * 60,
+  months: 30 * 24 * 60 * 60,
+}
+
+// Preset type for tracking active preset
+type PresetType = 'realtime' | 'hourly' | 'daily' | 'monthly' | 'custom'
+
 const ManageSchedulesModal: FC<ManageSchedulesModalProps> = ({
   onClose,
   organization: _organization,
   onChainSchedules,
 }) => {
   const [showCreateForm, setShowCreateForm] = useState(false)
-  const [cliffMonths, setCliffMonths] = useState('12')
-  const [totalMonths, setTotalMonths] = useState('48')
-  const [intervalDays, setIntervalDays] = useState('30')
+  const [activePreset, setActivePreset] = useState<PresetType>('realtime')
+
+  // Streaming mode (seconds-based)
+  const [cliffValue, setCliffValue] = useState('0')
+  const [cliffUnit, setCliffUnit] = useState<TimeUnit>('seconds')
+  const [totalValue, setTotalValue] = useState('60')
+  const [totalUnit, setTotalUnit] = useState<TimeUnit>('seconds')
+  const [intervalValue, setIntervalValue] = useState('1')
+  const [intervalUnit, setIntervalUnit] = useState<TimeUnit>('seconds')
+
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const { createSchedule } = useOrganization()
+
+  // Calculate seconds from value + unit
+  const toSeconds = (value: string, unit: TimeUnit): number => {
+    return parseInt(value || '0') * TIME_UNIT_MULTIPLIERS[unit]
+  }
+
+  // Format seconds to readable string (compact)
+  const formatSeconds = (seconds: number): string => {
+    if (seconds === 0) return '0s'
+    if (seconds < 60) return `${seconds}s`
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`
+    if (seconds < 2592000) return `${Math.floor(seconds / 86400)}d`
+    return `${Math.floor(seconds / 2592000)}mo`
+  }
+
+  // Format seconds to readable string (full)
+  const formatSecondsFull = (seconds: number): string => {
+    if (seconds === 0) return '0 seconds'
+    if (seconds < 60) return `${seconds} second${seconds !== 1 ? 's' : ''}`
+    if (seconds < 3600) return `${Math.floor(seconds / 60)} minute${seconds >= 120 ? 's' : ''}`
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)} hour${seconds >= 7200 ? 's' : ''}`
+    if (seconds < 2592000) return `${Math.floor(seconds / 86400)} day${seconds >= 172800 ? 's' : ''}`
+    return `${Math.floor(seconds / 2592000)} month${seconds >= 5184000 ? 's' : ''}`
+  }
+
+  const cliffSeconds = toSeconds(cliffValue, cliffUnit)
+  const totalSeconds = toSeconds(totalValue, totalUnit)
+  const intervalSeconds = toSeconds(intervalValue, intervalUnit)
+
+  // Handle manual input change - switch to custom preset
+  const handleManualChange = () => {
+    setActivePreset('custom')
+  }
 
   const handleCreateSchedule = async () => {
     setLoading(true)
     setError(null)
 
     try {
-      const cliffDuration = parseInt(cliffMonths) * 30 * 24 * 60 * 60 // months to seconds
-      const totalDuration = parseInt(totalMonths) * 30 * 24 * 60 * 60
-      const vestingInterval = parseInt(intervalDays) * 24 * 60 * 60 // days to seconds
+      // Validate
+      if (totalSeconds <= 0) {
+        throw new Error('Total duration must be greater than 0')
+      }
+      if (intervalSeconds <= 0) {
+        throw new Error('Interval must be greater than 0')
+      }
+      if (cliffSeconds >= totalSeconds) {
+        throw new Error('Cliff must be less than total duration')
+      }
 
-      // Create on-chain schedule
+      // Create on-chain schedule with proper BN instances
       await createSchedule({
-        cliffDuration: { toNumber: () => cliffDuration } as BN,
-        totalDuration: { toNumber: () => totalDuration } as BN,
-        vestingInterval: { toNumber: () => vestingInterval } as BN,
+        cliffDuration: new BN(cliffSeconds),
+        totalDuration: new BN(totalSeconds),
+        vestingInterval: new BN(intervalSeconds),
       })
 
       setShowCreateForm(false)
-      setCliffMonths('12')
-      setTotalMonths('48')
-      setIntervalDays('30')
+      // Reset to defaults
+      setCliffValue('0')
+      setTotalValue('60')
+      setIntervalValue('1')
       onClose() // Close to refresh
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create schedule')
     } finally {
       setLoading(false)
+    }
+  }
+
+  // Preset configurations
+  const applyPreset = (preset: 'realtime' | 'hourly' | 'daily' | 'monthly') => {
+    setActivePreset(preset)
+    switch (preset) {
+      case 'realtime':
+        setCliffValue('0'); setCliffUnit('seconds')
+        setTotalValue('60'); setTotalUnit('seconds')
+        setIntervalValue('1'); setIntervalUnit('seconds')
+        break
+      case 'hourly':
+        setCliffValue('0'); setCliffUnit('seconds')
+        setTotalValue('8'); setTotalUnit('hours')
+        setIntervalValue('1'); setIntervalUnit('hours')
+        break
+      case 'daily':
+        setCliffValue('0'); setCliffUnit('seconds')
+        setTotalValue('30'); setTotalUnit('days')
+        setIntervalValue('1'); setIntervalUnit('days')
+        break
+      case 'monthly':
+        setCliffValue('0'); setCliffUnit('seconds')
+        setTotalValue('12'); setTotalUnit('months')
+        setIntervalValue('1'); setIntervalUnit('months')
+        break
     }
   }
 
@@ -519,33 +609,151 @@ const ManageSchedulesModal: FC<ManageSchedulesModalProps> = ({
 
             {/* Create Form */}
             {showCreateForm && (
-              <div className="p-4 rounded-xl bg-kage-subtle space-y-4">
-                <h3 className="font-medium text-kage-text">Create New Schedule</h3>
-                <div className="grid grid-cols-3 gap-3">
-                  <Input
-                    label="Cliff (months)"
-                    type="number"
-                    value={cliffMonths}
-                    onChange={(e) => setCliffMonths(e.target.value)}
-                  />
-                  <Input
-                    label="Total (months)"
-                    type="number"
-                    value={totalMonths}
-                    onChange={(e) => setTotalMonths(e.target.value)}
-                  />
-                  <Input
-                    label="Interval (days)"
-                    type="number"
-                    value={intervalDays}
-                    onChange={(e) => setIntervalDays(e.target.value)}
-                  />
+              <div className="p-5 rounded-xl bg-kage-subtle space-y-4">
+                <div>
+                  <h3 className="font-medium text-kage-text">Create New Schedule</h3>
+                  <p className="text-xs text-kage-text-dim mt-0.5">Define vesting/streaming parameters</p>
                 </div>
+
+                {/* Preset Buttons - Pill style with active state */}
                 <div className="flex gap-2">
-                  <Button variant="ghost" size="sm" onClick={() => setShowCreateForm(false)}>
+                  {(['realtime', 'hourly', 'daily', 'monthly'] as const).map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => applyPreset(preset)}
+                      className={`px-3 py-1.5 text-xs rounded-full transition-all ${
+                        activePreset === preset
+                          ? 'bg-kage-accent text-white font-medium'
+                          : 'bg-kage-elevated text-kage-text-muted hover:text-kage-text'
+                      }`}
+                    >
+                      {preset === 'realtime' ? 'Real-time' : preset.charAt(0).toUpperCase() + preset.slice(1)}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Input Fields - Unified groups */}
+                <div className="space-y-3">
+                  {/* Cliff */}
+                  <div>
+                    <label className="block text-xs text-kage-text-muted mb-1.5">Cliff</label>
+                    <div className="flex rounded-xl overflow-hidden border border-kage-border focus-within:border-kage-accent transition-colors">
+                      <input
+                        type="number"
+                        min="0"
+                        value={cliffValue}
+                        onChange={(e) => { setCliffValue(e.target.value); handleManualChange() }}
+                        className="flex-1 px-3 py-2.5 bg-kage-elevated text-kage-text focus:outline-none"
+                        placeholder="0"
+                      />
+                      <select
+                        value={cliffUnit}
+                        onChange={(e) => { setCliffUnit(e.target.value as TimeUnit); handleManualChange() }}
+                        className="px-3 py-2.5 bg-kage-elevated/50 text-kage-text-muted border-l border-kage-border focus:outline-none cursor-pointer"
+                      >
+                        <option value="seconds">sec</option>
+                        <option value="minutes">min</option>
+                        <option value="hours">hr</option>
+                        <option value="days">day</option>
+                        <option value="months">mo</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Total Duration */}
+                  <div>
+                    <label className="block text-xs text-kage-text-muted mb-1.5">Total Duration</label>
+                    <div className="flex rounded-xl overflow-hidden border border-kage-border focus-within:border-kage-accent transition-colors">
+                      <input
+                        type="number"
+                        min="1"
+                        value={totalValue}
+                        onChange={(e) => { setTotalValue(e.target.value); handleManualChange() }}
+                        className="flex-1 px-3 py-2.5 bg-kage-elevated text-kage-text focus:outline-none"
+                        placeholder="60"
+                      />
+                      <select
+                        value={totalUnit}
+                        onChange={(e) => { setTotalUnit(e.target.value as TimeUnit); handleManualChange() }}
+                        className="px-3 py-2.5 bg-kage-elevated/50 text-kage-text-muted border-l border-kage-border focus:outline-none cursor-pointer"
+                      >
+                        <option value="seconds">sec</option>
+                        <option value="minutes">min</option>
+                        <option value="hours">hr</option>
+                        <option value="days">day</option>
+                        <option value="months">mo</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Interval */}
+                  <div>
+                    <label className="block text-xs text-kage-text-muted mb-1.5">Claim Interval</label>
+                    <div className="flex rounded-xl overflow-hidden border border-kage-border focus-within:border-kage-accent transition-colors">
+                      <input
+                        type="number"
+                        min="1"
+                        value={intervalValue}
+                        onChange={(e) => { setIntervalValue(e.target.value); handleManualChange() }}
+                        className="flex-1 px-3 py-2.5 bg-kage-elevated text-kage-text focus:outline-none"
+                        placeholder="1"
+                      />
+                      <select
+                        value={intervalUnit}
+                        onChange={(e) => { setIntervalUnit(e.target.value as TimeUnit); handleManualChange() }}
+                        className="px-3 py-2.5 bg-kage-elevated/50 text-kage-text-muted border-l border-kage-border focus:outline-none cursor-pointer"
+                      >
+                        <option value="seconds">sec</option>
+                        <option value="minutes">min</option>
+                        <option value="hours">hr</option>
+                        <option value="days">day</option>
+                        <option value="months">mo</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Compact Summary */}
+                <div className="p-3 rounded-xl bg-kage-elevated/30 border border-kage-border-subtle">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[10px] text-kage-text-dim uppercase tracking-wider">Summary</span>
+                    <span className="text-[10px] text-kage-text-dim font-mono">
+                      {cliffSeconds}s / {totalSeconds}s / {intervalSeconds}s
+                    </span>
+                  </div>
+                  <p className="text-sm text-kage-text leading-relaxed">
+                    {cliffSeconds > 0 ? (
+                      <>
+                        <span className="text-kage-accent font-medium">{formatSecondsFull(cliffSeconds)}</span> cliff, then unlock every{' '}
+                        <span className="text-kage-accent font-medium">{formatSecondsFull(intervalSeconds)}</span> for{' '}
+                        <span className="text-kage-accent font-medium">{formatSecondsFull(totalSeconds)}</span>
+                      </>
+                    ) : (
+                      <>
+                        Unlock every <span className="text-kage-accent font-medium">{formatSecondsFull(intervalSeconds)}</span> for{' '}
+                        <span className="text-kage-accent font-medium">{formatSecondsFull(totalSeconds)}</span>
+                      </>
+                    )}
+                  </p>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex items-center justify-end gap-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowCreateForm(false)}
+                    disabled={loading}
+                    className="px-4 py-2 text-sm text-kage-text-muted hover:text-kage-text transition-colors disabled:opacity-50"
+                  >
                     Cancel
-                  </Button>
-                  <Button variant="primary" size="sm" onClick={handleCreateSchedule} loading={loading}>
+                  </button>
+                  <Button
+                    variant="primary"
+                    onClick={handleCreateSchedule}
+                    loading={loading}
+                    disabled={totalSeconds <= 0 || intervalSeconds <= 0 || cliffSeconds >= totalSeconds || loading}
+                  >
                     Create Schedule
                   </Button>
                 </div>
@@ -560,35 +768,38 @@ const ManageSchedulesModal: FC<ManageSchedulesModalProps> = ({
               </div>
             ) : (
               <div className="space-y-3">
-                {onChainSchedules.map((schedule, index) => (
-                  <div key={schedule.publicKey.toBase58()} className="p-4 rounded-xl bg-kage-elevated border border-kage-border-subtle">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="font-medium text-kage-text">Schedule #{index}</p>
-                        <p className="text-xs text-kage-text-dim font-mono mt-1">
-                          {formatAddress(schedule.publicKey.toBase58(), 8)}
-                        </p>
+                {onChainSchedules.map((schedule) => {
+                  const scheduleId = schedule.account.scheduleId.toNumber()
+                  return (
+                    <div key={schedule.publicKey.toBase58()} className="p-4 rounded-xl bg-kage-elevated border border-kage-border-subtle">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="font-medium text-kage-text">Schedule #{scheduleId}</p>
+                          <p className="text-xs text-kage-text-dim font-mono mt-1">
+                            {formatAddress(schedule.publicKey.toBase58(), 8)}
+                          </p>
+                        </div>
+                        <Badge variant={schedule.account.isActive ? 'success' : 'default'}>
+                          {schedule.account.isActive ? 'Active' : 'Inactive'}
+                        </Badge>
                       </div>
-                      <Badge variant={schedule.account.isActive ? 'success' : 'default'}>
-                        {schedule.account.isActive ? 'Active' : 'Inactive'}
-                      </Badge>
+                      <div className="grid grid-cols-3 gap-2 mt-3 text-sm">
+                        <div>
+                          <p className="text-kage-text-muted text-xs">Cliff</p>
+                          <p className="text-kage-text">{formatDuration(schedule.account.cliffDuration.toNumber())}</p>
+                        </div>
+                        <div>
+                          <p className="text-kage-text-muted text-xs">Total</p>
+                          <p className="text-kage-text">{formatDuration(schedule.account.totalDuration.toNumber())}</p>
+                        </div>
+                        <div>
+                          <p className="text-kage-text-muted text-xs">Interval</p>
+                          <p className="text-kage-text">{formatDuration(schedule.account.vestingInterval.toNumber())}</p>
+                        </div>
+                      </div>
                     </div>
-                    <div className="grid grid-cols-3 gap-2 mt-3 text-sm">
-                      <div>
-                        <p className="text-kage-text-muted text-xs">Cliff</p>
-                        <p className="text-kage-text">{formatDuration(schedule.account.cliffDuration.toNumber())}</p>
-                      </div>
-                      <div>
-                        <p className="text-kage-text-muted text-xs">Total</p>
-                        <p className="text-kage-text">{formatDuration(schedule.account.totalDuration.toNumber())}</p>
-                      </div>
-                      <div>
-                        <p className="text-kage-text-muted text-xs">Interval</p>
-                        <p className="text-kage-text">{formatDuration(schedule.account.vestingInterval.toNumber())}</p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
 
@@ -625,7 +836,10 @@ const ManagePositionsModal: FC<ManagePositionsModalProps> = ({
     label: string | null
     metaAddress: { metaSpendPub: string; metaViewPub: string }
   } | null>(null)
-  const [selectedScheduleIndex, setSelectedScheduleIndex] = useState<number>(0)
+  // Use the actual schedule ID from the first schedule, not array index
+  const [selectedScheduleIndex, setSelectedScheduleIndex] = useState<number>(
+    onChainSchedules.length > 0 ? onChainSchedules[0].account.scheduleId.toNumber() : 0
+  )
   const [amount, setAmount] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -724,11 +938,14 @@ const ManagePositionsModal: FC<ManagePositionsModalProps> = ({
                       onChange={(e) => setSelectedScheduleIndex(parseInt(e.target.value))}
                       className="w-full px-3 py-2 bg-kage-elevated border border-kage-border rounded-2xl text-kage-text focus:outline-none focus:border-kage-accent-dim"
                     >
-                      {onChainSchedules.map((schedule, index) => (
-                        <option key={schedule.publicKey.toBase58()} value={index}>
-                          Schedule #{index} - {formatDuration(schedule.account.cliffDuration.toNumber())} cliff, {formatDuration(schedule.account.totalDuration.toNumber())} total
-                        </option>
-                      ))}
+                      {onChainSchedules.map((schedule) => {
+                        const scheduleId = schedule.account.scheduleId.toNumber()
+                        return (
+                          <option key={schedule.publicKey.toBase58()} value={scheduleId}>
+                            Schedule #{scheduleId} - {formatDuration(schedule.account.cliffDuration.toNumber())} cliff, {formatDuration(schedule.account.totalDuration.toNumber())} total
+                          </option>
+                        )
+                      })}
                     </select>
                   </div>
                 )}

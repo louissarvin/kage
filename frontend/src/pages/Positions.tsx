@@ -380,7 +380,6 @@ const PositionCard: FC<PositionCardProps> = ({ position, currentTime, onClaimCli
             </div>
           </div>
           <Badge variant={statusProps.variant}>
-            {position.status === 'vested' && <CheckCircle2 className="w-3 h-3 mr-1" />}
             {statusProps.label}
           </Badge>
         </div>
@@ -560,7 +559,7 @@ const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
         <div className="p-6 space-y-6">
           {fetchingProgress ? (
             <div className="flex items-center justify-center py-8">
-              <Loader2 className="w-8 h-8 text-kage-accent animate-spin" />
+              <Loader2 className="w-8 h-8 text-kage-secondary animate-spin" />
             </div>
           ) : (
             <>
@@ -568,7 +567,6 @@ const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
               <div className="flex items-center justify-between">
                 <span className="text-sm text-kage-text-muted">Status</span>
                 <Badge variant={statusProps.variant}>
-                  {position.status === 'vested' && <CheckCircle2 className="w-3 h-3 mr-1" />}
                   {statusProps.label}
                 </Badge>
               </div>
@@ -577,7 +575,7 @@ const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-kage-text-muted">Vesting Progress</span>
-                  <span className="text-lg font-semibold text-kage-accent">
+                  <span className="text-lg font-semibold text-kage-secondary">
                     {vestingInfo?.vestingProgress ?? position.vestingProgress}%
                   </span>
                 </div>
@@ -587,7 +585,7 @@ const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
                       position.status === 'cliff'
                         ? 'bg-yellow-500'
                         : position.status === 'vested'
-                          ? 'bg-kage-accent'
+                          ? 'bg-kage-secondary'
                           : 'bg-green-500'
                     }`}
                     style={{ width: `${vestingInfo?.vestingProgress ?? position.vestingProgress}%` }}
@@ -599,7 +597,6 @@ const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
               <div className="grid grid-cols-2 gap-4">
                 <div className="p-4 rounded-xl bg-kage-subtle">
                   <div className="flex items-center gap-2 mb-2">
-                    <Clock className="w-4 h-4 text-kage-text-muted" />
                     <span className="text-xs text-kage-text-muted">Start Date</span>
                   </div>
                   <p className="text-sm font-medium text-kage-text">
@@ -611,7 +608,6 @@ const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
 
                 <div className="p-4 rounded-xl bg-kage-subtle">
                   <div className="flex items-center gap-2 mb-2">
-                    <TrendingUp className="w-4 h-4 text-kage-text-muted" />
                     <span className="text-xs text-kage-text-muted">Fully Vested</span>
                   </div>
                   <p className="text-sm font-medium text-kage-text">
@@ -624,7 +620,6 @@ const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
                 {vestingInfo?.isInCliff && (
                   <div className="col-span-2 p-4 rounded-xl bg-yellow-500/10 border border-yellow-500/20">
                     <div className="flex items-center gap-2 mb-2">
-                      <AlertCircle className="w-4 h-4 text-yellow-400" />
                       <span className="text-xs text-yellow-400">Cliff Period Active</span>
                     </div>
                     <p className="text-sm text-yellow-300">
@@ -636,7 +631,6 @@ const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
                 {!vestingInfo?.isInCliff && !vestingInfo?.isFullyVested && (
                   <div className="col-span-2 p-4 rounded-xl bg-green-500/10 border border-green-500/20">
                     <div className="flex items-center gap-2 mb-2">
-                      <TrendingUp className="w-4 h-4 text-green-400" />
                       <span className="text-xs text-green-400">Actively Vesting</span>
                     </div>
                     <p className="text-sm text-green-300">
@@ -646,9 +640,8 @@ const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
                 )}
 
                 {vestingInfo?.isFullyVested && (
-                  <div className="col-span-2 p-4 rounded-xl bg-kage-accent/10 border border-kage-accent/20">
+                  <div className="col-span-2 p-4 rounded-xl bg-kage-accent/10">
                     <div className="flex items-center gap-2 mb-2">
-                      <CheckCircle2 className="w-4 h-4 text-kage-accent" />
                       <span className="text-xs text-kage-accent">Fully Vested</span>
                     </div>
                     <p className="text-sm text-kage-accent">
@@ -661,7 +654,6 @@ const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
               {/* Privacy Info */}
               <div className="p-4 rounded-xl bg-kage-subtle border border-kage-border-subtle">
                 <div className="flex items-start gap-3">
-                  <Info className="w-5 h-5 text-kage-text-muted flex-shrink-0 mt-0.5" />
                   <div>
                     <p className="text-sm text-kage-text-muted">
                       Your vesting amount is encrypted using Arcium MPC for privacy.
@@ -702,12 +694,10 @@ const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
             >
               {loading ? (
                 <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                   Processing...
                 </>
               ) : (
                 <>
-                  <Wallet className="w-4 h-4 mr-2" />
                   Claim Tokens
                 </>
               )}

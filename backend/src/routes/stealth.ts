@@ -7,6 +7,20 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
+import {
+  prepareWriteMetaKeysToVault,
+  prepareReadMetaKeysFromVault,
+  reconstructKeyFromU128,
+} from '../lib/solana.js'
+import {
+  x25519,
+  RescueCipher,
+  getMXEPublicKey,
+} from '@arcium-hq/client'
+import { PublicKey, Keypair } from '@solana/web3.js'
+import { AnchorProvider, Program, Wallet } from '@coral-xyz/anchor'
+import { Connection } from '@solana/web3.js'
+import { config } from '../config/index.js'
 
 // Validation schemas
 const registerKeysSchema = z.object({
@@ -174,6 +188,172 @@ export async function stealthRoutes(app: FastifyInstance) {
       return reply.status(500).send({
         success: false,
         error: 'Failed to get meta address',
+      })
+    }
+  })
+
+  // =============================================================================
+  // Arcium MPC Vault Operations
+  // =============================================================================
+
+  /**
+   * POST /api/stealth/prepare-vault-write
+   * Prepare data for writing meta-keys to on-chain Arcium vault
+   *
+   * This encrypts the stealth private keys for MPC storage.
+   * Frontend will use this data to build and submit the transaction.
+   */
+  app.post('/prepare-vault-write', { preHandler: [app.authenticate] }, async (request, reply) => {
+    try {
+      const { walletAddress } = request.user as { userId: string; walletAddress: string }
+
+      const schema = z.object({
+        spendPrivKeyHex: z.string().length(64), // 32 bytes as hex
+        viewPrivKeyHex: z.string().length(64),  // 32 bytes as hex
+      })
+
+      const parsed = schema.safeParse(request.body)
+      if (!parsed.success) {
+        return reply.status(400).send({
+          success: false,
+          error: parsed.error.errors[0].message,
+        })
+      }
+
+      const { spendPrivKeyHex, viewPrivKeyHex } = parsed.data
+
+      // Prepare encrypted data for vault write
+      const preparedData = await prepareWriteMetaKeysToVault(
+        walletAddress,
+        spendPrivKeyHex,
+        viewPrivKeyHex
+      )
+
+      return reply.send({
+        success: true,
+        data: preparedData,
+      })
+    } catch (error) {
+      console.error('Prepare vault write error:', error)
+      return reply.status(500).send({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to prepare vault write',
+      })
+    }
+  })
+
+  /**
+   * POST /api/stealth/prepare-vault-read
+   * Prepare data for reading meta-keys from on-chain Arcium vault
+   *
+   * This generates a session key for receiving decrypted keys.
+   * Frontend will use this data to build and submit the transaction,
+   * then use the session key to decrypt the event data.
+   */
+  app.post('/prepare-vault-read', { preHandler: [app.authenticate] }, async (request, reply) => {
+    try {
+      const { walletAddress } = request.user as { userId: string; walletAddress: string }
+
+      // Prepare data for vault read
+      const preparedData = await prepareReadMetaKeysFromVault(walletAddress)
+
+      return reply.send({
+        success: true,
+        data: preparedData,
+      })
+    } catch (error) {
+      console.error('Prepare vault read error:', error)
+      return reply.status(500).send({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to prepare vault read',
+      })
+    }
+  })
+
+  /**
+   * POST /api/stealth/decrypt-vault-event
+   * Decrypt meta-keys from a MetaKeysRetrieved event
+   *
+   * This uses the session private key and MXE public key to decrypt
+   * the MPC-encrypted keys from the event data.
+   */
+  app.post('/decrypt-vault-event', { preHandler: [app.authenticate] }, async (request, reply) => {
+    try {
+      const schema = z.object({
+        sessionPrivKeyHex: z.string().length(64), // 32 bytes as hex
+        encryptedSpendLo: z.array(z.number()),
+        encryptedSpendHi: z.array(z.number()),
+        encryptedViewLo: z.array(z.number()),
+        encryptedViewHi: z.array(z.number()),
+        nonce: z.array(z.number()),
+      })
+
+      const parsed = schema.safeParse(request.body)
+      if (!parsed.success) {
+        return reply.status(400).send({
+          success: false,
+          error: parsed.error.errors[0].message,
+        })
+      }
+
+      const {
+        sessionPrivKeyHex,
+        encryptedSpendLo,
+        encryptedSpendHi,
+        encryptedViewLo,
+        encryptedViewHi,
+        nonce,
+      } = parsed.data
+
+      // Get MXE public key
+      const programId = new PublicKey(config.shadowvestProgramId)
+      const connection = new Connection(config.solanaRpcUrl, 'confirmed')
+      const dummyKeypair = Keypair.generate()
+      const provider = new AnchorProvider(
+        connection,
+        new Wallet(dummyKeypair),
+        { commitment: 'confirmed' }
+      )
+
+      const mxePublicKey = await getMXEPublicKey(provider, programId)
+      if (!mxePublicKey) {
+        return reply.status(500).send({
+          success: false,
+          error: 'Failed to get MXE public key',
+        })
+      }
+
+      // Decrypt with session key
+      const sessionPrivKey = Buffer.from(sessionPrivKeyHex, 'hex')
+      const sharedSecret = x25519.getSharedSecret(sessionPrivKey, mxePublicKey)
+      const cipher = new RescueCipher(sharedSecret)
+
+      const decrypted = cipher.decrypt(
+        [
+          new Uint8Array(encryptedSpendLo) as unknown as number[],
+          new Uint8Array(encryptedSpendHi) as unknown as number[],
+          new Uint8Array(encryptedViewLo) as unknown as number[],
+          new Uint8Array(encryptedViewHi) as unknown as number[],
+        ],
+        new Uint8Array(nonce)
+      )
+
+      // Reconstruct 32-byte keys from u128 pairs
+      const spendPrivKey = reconstructKeyFromU128(decrypted[0], decrypted[1])
+      const viewPrivKey = reconstructKeyFromU128(decrypted[2], decrypted[3])
+
+      return reply.send({
+        success: true,
+        data: {
+          spendPrivKeyHex: Buffer.from(spendPrivKey).toString('hex'),
+          viewPrivKeyHex: Buffer.from(viewPrivKey).toString('hex'),
+        },
+      })
+    } catch (error) {
+      console.error('Decrypt vault event error:', error)
+      return reply.status(500).send({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to decrypt vault event',
       })
     }
   })

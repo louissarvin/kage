@@ -72,3 +72,20 @@ export type {
   CreatePositionParams,
   PositionStats,
 } from './position'
+
+// Meta-keys vault (Arcium MPC storage)
+export {
+  writeMetaKeysToVault,
+  readMetaKeysFromVault,
+  waitForMetaKeysEvent,
+  decryptMetaKeysFromEvent,
+  getMetaKeysVault,
+  findMetaKeysVaultPda,
+} from './metaKeysVault'
+
+export type {
+  WriteMetaKeysResult,
+  ReadMetaKeysResult,
+  MetaKeysRetrievedEvent,
+  DecryptedMetaKeys,
+} from './metaKeysVault'

@@ -5,7 +5,7 @@
  * This runs in Node.js backend where @arcium-hq/client works properly.
  */
 
-import { Connection, PublicKey, Keypair, ComputeBudgetProgram, SystemProgram } from '@solana/web3.js'
+import { Connection, PublicKey, Keypair, ComputeBudgetProgram, SystemProgram, SYSVAR_CLOCK_PUBKEY } from '@solana/web3.js'
 import { AnchorProvider, Program, Wallet } from '@coral-xyz/anchor'
 import BN from 'bn.js'
 import { createHash, randomBytes } from 'crypto'
@@ -26,6 +26,7 @@ import {
   x25519,
 } from '@arcium-hq/client'
 import { config } from '../config/index.js'
+import bs58 from 'bs58'
 import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
@@ -167,12 +168,20 @@ export async function encryptAmount(
 
 /**
  * Create beneficiary commitment from meta-address
+ *
+ * The commitment is the raw 32-byte Ed25519 public key (metaSpendPub).
+ * This is used for signature verification in authorize_claim.
+ *
+ * NOTE: metaSpendPub is the stealth spend public key (base58 encoded).
+ * The beneficiary proves ownership by signing with the corresponding private key.
  */
 export function createBeneficiaryCommitment(
   metaSpendPub: string,
-  metaViewPub: string
+  _metaViewPub: string // Kept for API compatibility, but not used in commitment
 ): Buffer {
-  return createHash('sha256').update(metaSpendPub + metaViewPub).digest()
+  // Decode base58 public key to raw 32-byte buffer
+  // The metaSpendPub is an Ed25519 public key that can verify signatures
+  return Buffer.from(bs58.decode(metaSpendPub))
 }
 
 // =============================================================================
@@ -483,6 +492,248 @@ export function findVaultPda(organization: PublicKey): [PublicKey, number] {
     [Buffer.from('vault'), organization.toBuffer()],
     programId
   )
+}
+
+// =============================================================================
+// Meta-Keys Vault PDAs
+// =============================================================================
+
+export function findMetaKeysVaultPda(owner: PublicKey): [PublicKey, number] {
+  const programId = new PublicKey(config.shadowvestProgramId)
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('meta_keys_vault'), owner.toBuffer()],
+    programId
+  )
+}
+
+// =============================================================================
+// Meta-Keys Vault MPC Operations
+// =============================================================================
+
+/**
+ * Helper: Convert first 16 bytes to BigInt (little-endian)
+ */
+function bytesToU128(bytes: Uint8Array): bigint {
+  let value = BigInt(0)
+  for (let i = 0; i < 16 && i < bytes.length; i++) {
+    value |= BigInt(bytes[i]) << (BigInt(i) * BigInt(8))
+  }
+  return value
+}
+
+/**
+ * Helper: Split 32-byte key into two u128 values (lo, hi)
+ */
+export function splitKeyToU128(key: Uint8Array): [bigint, bigint] {
+  if (key.length !== 32) {
+    throw new Error('Key must be 32 bytes')
+  }
+  const lo = bytesToU128(key.slice(0, 16))
+  const hi = bytesToU128(key.slice(16, 32))
+  return [lo, hi]
+}
+
+/**
+ * Helper: Convert BigInt to 16-byte array (little-endian)
+ */
+function u128ToBytes(value: bigint): Uint8Array {
+  const bytes = new Uint8Array(16)
+  let temp = value
+  for (let i = 0; i < 16; i++) {
+    bytes[i] = Number(temp & BigInt(0xff))
+    temp >>= BigInt(8)
+  }
+  return bytes
+}
+
+/**
+ * Helper: Reconstruct 32-byte key from two u128 values
+ */
+export function reconstructKeyFromU128(lo: bigint, hi: bigint): Uint8Array {
+  const loBytes = u128ToBytes(lo)
+  const hiBytes = u128ToBytes(hi)
+  const key = new Uint8Array(32)
+  key.set(loBytes, 0)
+  key.set(hiBytes, 16)
+  return key
+}
+
+export interface PrepareWriteMetaKeysResult {
+  vaultPda: string
+  signPda: string
+  computationOffset: string
+  encryptedSpendLo: number[]
+  encryptedSpendHi: number[]
+  encryptedViewLo: number[]
+  encryptedViewHi: number[]
+  clientPubkey: number[]
+  userNonce: string
+  mxeNonce: string
+  arciumAccounts: {
+    mxeAccount: string
+    mempoolAccount: string
+    executingPool: string
+    computationAccount: string
+    compDefAccount: string
+    clusterAccount: string
+    poolAccount: string
+    clockAccount: string
+    arciumProgram: string
+  }
+  programId: string
+}
+
+/**
+ * Prepare data for writing meta-keys to vault (MPC encryption)
+ * This encrypts the stealth private keys and prepares all accounts for the transaction
+ */
+export async function prepareWriteMetaKeysToVault(
+  ownerPubkey: string,
+  spendPrivKeyHex: string,
+  viewPrivKeyHex: string
+): Promise<PrepareWriteMetaKeysResult> {
+  const programId = new PublicKey(config.shadowvestProgramId)
+  const owner = new PublicKey(ownerPubkey)
+
+  // Create dummy provider for MXE key fetching
+  const dummyKeypair = Keypair.generate()
+  const prov = createProvider(dummyKeypair)
+
+  // Get MXE public key for encryption
+  const mxePublicKey = await getMXEPublicKey(prov, programId)
+  if (!mxePublicKey) {
+    throw new Error('Failed to get MXE public key - Arcium MPC may not be initialized')
+  }
+
+  // Convert hex keys to bytes and split into u128 pairs
+  const spendPrivBytes = Buffer.from(spendPrivKeyHex, 'hex')
+  const viewPrivBytes = Buffer.from(viewPrivKeyHex, 'hex')
+
+  const [spendLo, spendHi] = splitKeyToU128(spendPrivBytes)
+  const [viewLo, viewHi] = splitKeyToU128(viewPrivBytes)
+
+  // Client-side encryption with x25519
+  const sessionPrivKey = x25519.utils.randomSecretKey()
+  const sessionPubKey = x25519.getPublicKey(sessionPrivKey)
+  const sharedSecret = x25519.getSharedSecret(sessionPrivKey, mxePublicKey)
+  const cipher = new RescueCipher(sharedSecret)
+
+  // Encrypt all 4 u128 values
+  const plaintext = [spendLo, spendHi, viewLo, viewHi]
+  const userNonce = randomBytes(16)
+  const ciphertext = cipher.encrypt(plaintext, userNonce)
+
+  // Generate MXE nonce for re-encryption
+  const mxeNonce = randomBytes(16)
+
+  // Generate computation offset
+  const computationOffsetBytes = randomBytes(8)
+  const computationOffset = new BN(computationOffsetBytes)
+
+  // Derive vault PDA
+  const [vaultPda] = findMetaKeysVaultPda(owner)
+  const [signPda] = findSignPda()
+
+  // Build Arcium accounts
+  const compDefOffset = Buffer.from(getCompDefAccOffset('store_meta_keys')).readUInt32LE()
+  const arciumAccounts = {
+    mxeAccount: getMXEAccAddress(programId).toBase58(),
+    mempoolAccount: getMempoolAccAddress(ARCIUM_CLUSTER_OFFSET).toBase58(),
+    executingPool: getExecutingPoolAccAddress(ARCIUM_CLUSTER_OFFSET).toBase58(),
+    computationAccount: getComputationAccAddress(ARCIUM_CLUSTER_OFFSET, computationOffset).toBase58(),
+    compDefAccount: getCompDefAccAddress(programId, compDefOffset).toBase58(),
+    clusterAccount: getClusterAccAddress(ARCIUM_CLUSTER_OFFSET).toBase58(),
+    poolAccount: getFeePoolAccAddress().toBase58(),
+    clockAccount: getClockAccAddress().toBase58(),
+    arciumProgram: getArciumProgramId().toBase58(),
+  }
+
+  return {
+    vaultPda: vaultPda.toBase58(),
+    signPda: signPda.toBase58(),
+    computationOffset: computationOffset.toString(),
+    encryptedSpendLo: Array.from(ciphertext[0]),
+    encryptedSpendHi: Array.from(ciphertext[1]),
+    encryptedViewLo: Array.from(ciphertext[2]),
+    encryptedViewHi: Array.from(ciphertext[3]),
+    clientPubkey: Array.from(sessionPubKey),
+    userNonce: new BN(deserializeLE(userNonce).toString()).toString(),
+    mxeNonce: new BN(deserializeLE(mxeNonce).toString()).toString(),
+    arciumAccounts,
+    programId: programId.toBase58(),
+  }
+}
+
+export interface PrepareReadMetaKeysResult {
+  vaultPda: string
+  signPda: string
+  computationOffset: string
+  clientPubkey: number[]
+  sessionNonce: string
+  // Session private key (hex) - needed for decryption on frontend
+  sessionPrivKeyHex: string
+  arciumAccounts: {
+    mxeAccount: string
+    mempoolAccount: string
+    executingPool: string
+    computationAccount: string
+    compDefAccount: string
+    clusterAccount: string
+    poolAccount: string
+    clockAccount: string
+    arciumProgram: string
+  }
+  programId: string
+}
+
+/**
+ * Prepare data for reading meta-keys from vault (MPC decryption)
+ * This generates a session key for receiving the decrypted keys
+ */
+export async function prepareReadMetaKeysFromVault(
+  ownerPubkey: string
+): Promise<PrepareReadMetaKeysResult> {
+  const programId = new PublicKey(config.shadowvestProgramId)
+  const owner = new PublicKey(ownerPubkey)
+
+  // Create new session key for receiving decrypted data
+  const sessionPrivKey = x25519.utils.randomSecretKey()
+  const sessionPubKey = x25519.getPublicKey(sessionPrivKey)
+  const sessionNonce = randomBytes(16)
+
+  // Generate computation offset
+  const computationOffsetBytes = randomBytes(8)
+  const computationOffset = new BN(computationOffsetBytes)
+
+  // Derive vault PDA
+  const [vaultPda] = findMetaKeysVaultPda(owner)
+  const [signPda] = findSignPda()
+
+  // Build Arcium accounts
+  const compDefOffset = Buffer.from(getCompDefAccOffset('fetch_meta_keys')).readUInt32LE()
+  const arciumAccounts = {
+    mxeAccount: getMXEAccAddress(programId).toBase58(),
+    mempoolAccount: getMempoolAccAddress(ARCIUM_CLUSTER_OFFSET).toBase58(),
+    executingPool: getExecutingPoolAccAddress(ARCIUM_CLUSTER_OFFSET).toBase58(),
+    computationAccount: getComputationAccAddress(ARCIUM_CLUSTER_OFFSET, computationOffset).toBase58(),
+    compDefAccount: getCompDefAccAddress(programId, compDefOffset).toBase58(),
+    clusterAccount: getClusterAccAddress(ARCIUM_CLUSTER_OFFSET).toBase58(),
+    poolAccount: getFeePoolAccAddress().toBase58(),
+    clockAccount: getClockAccAddress().toBase58(),
+    arciumProgram: getArciumProgramId().toBase58(),
+  }
+
+  return {
+    vaultPda: vaultPda.toBase58(),
+    signPda: signPda.toBase58(),
+    computationOffset: computationOffset.toString(),
+    clientPubkey: Array.from(sessionPubKey),
+    sessionNonce: new BN(deserializeLE(sessionNonce).toString()).toString(),
+    // Include session private key for frontend decryption
+    sessionPrivKeyHex: Buffer.from(sessionPrivKey).toString('hex'),
+    arciumAccounts,
+    programId: programId.toBase58(),
+  }
 }
 
 // =============================================================================

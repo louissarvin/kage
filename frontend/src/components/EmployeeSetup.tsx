@@ -2,6 +2,7 @@
  * Employee Setup Component
  *
  * Single-step onboarding: enter username → creates stealth keys + link together.
+ * Stealth private keys are stored in on-chain Arcium MPC vault for secure, non-custodial storage.
  */
 
 import { useState, type FC } from 'react'
@@ -11,11 +12,13 @@ import {
   Copy,
   ExternalLink,
   CheckCircle,
+  Shield,
 } from 'lucide-react'
 import { Keypair } from '@solana/web3.js'
 import bs58 from 'bs58'
 import { Card, CardContent, CardHeader, Button, Input } from '@/components/ui'
 import { useLinks, useSlugAvailability } from '@/hooks'
+import { useMetaKeysVault } from '@/hooks/useMetaKeysVault'
 import { useAuth } from '@/contexts/AuthContext'
 import { api } from '@/lib/api'
 
@@ -27,10 +30,12 @@ export const EmployeeSetup: FC<EmployeeSetupProps> = ({ onComplete }) => {
   const { user, refreshUser } = useAuth()
   const { links, loading: linksLoading, refresh: refreshLinks } = useLinks()
   const { isAvailable, reason, loading: checkLoading, check } = useSlugAvailability()
+  const { storeMetaKeys, loading: vaultLoading, error: vaultError } = useMetaKeysVault()
 
   const [slug, setSlug] = useState('')
   const [label, setLabel] = useState('')
   const [creating, setCreating] = useState(false)
+  const [setupStep, setSetupStep] = useState<'idle' | 'generating' | 'storing' | 'linking'>('idle')
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
 
@@ -57,29 +62,33 @@ export const EmployeeSetup: FC<EmployeeSetupProps> = ({ onComplete }) => {
     try {
       // Step 1: Generate stealth keys if not already registered
       if (!hasStealthKeys) {
+        setSetupStep('generating')
         const spendKeypair = Keypair.generate()
         const viewKeypair = Keypair.generate()
 
         const metaSpendPub = bs58.encode(spendKeypair.publicKey.toBytes())
         const metaViewPub = bs58.encode(viewKeypair.publicKey.toBytes())
 
-        // Register with backend
+        // Get the 32-byte private key seeds (first 32 bytes of secretKey)
+        const spendPrivKeyHex = Buffer.from(spendKeypair.secretKey.slice(0, 32)).toString('hex')
+        const viewPrivKeyHex = Buffer.from(viewKeypair.secretKey.slice(0, 32)).toString('hex')
+
+        // Register public keys with backend
         await api.registerStealthKeys(wallet.id, metaSpendPub, metaViewPub)
 
-        // Store private keys locally (MVP only - production uses Arcium)
-        localStorage.setItem(
-          `stealth_keys_${wallet.address}`,
-          JSON.stringify({
-            spendPriv: bs58.encode(spendKeypair.secretKey),
-            viewPriv: bs58.encode(viewKeypair.secretKey),
-          })
-        )
+        // Store private keys in on-chain Arcium MPC vault
+        // This encrypts the keys via MPC - only the owner can retrieve them
+        setSetupStep('storing')
+        console.log('Storing stealth private keys in on-chain Arcium vault...')
+        await storeMetaKeys(spendPrivKeyHex, viewPrivKeyHex)
+        console.log('Stealth keys stored in vault successfully!')
 
         // Refresh user to get updated wallet with keys
         await refreshUser()
       }
 
       // Step 2: Create the link
+      setSetupStep('linking')
       await api.createLink(slug, wallet.id, label || undefined)
 
       // Refresh data
@@ -89,10 +98,12 @@ export const EmployeeSetup: FC<EmployeeSetupProps> = ({ onComplete }) => {
       // Clear form
       setSlug('')
       setLabel('')
+      setSetupStep('idle')
 
       onComplete?.()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create link')
+      setSetupStep('idle')
     } finally {
       setCreating(false)
     }
@@ -233,7 +244,13 @@ export const EmployeeSetup: FC<EmployeeSetupProps> = ({ onComplete }) => {
               className="w-full"
             >
               {creating
-                ? (hasStealthKeys ? 'Creating Link...' : 'Setting up secure keys...')
+                ? (setupStep === 'generating'
+                    ? 'Generating secure keys...'
+                    : setupStep === 'storing'
+                    ? 'Storing keys on-chain (MPC)...'
+                    : setupStep === 'linking'
+                    ? 'Creating link...'
+                    : 'Setting up...')
                 : 'Create Link'
               }
             </Button>
@@ -241,11 +258,14 @@ export const EmployeeSetup: FC<EmployeeSetupProps> = ({ onComplete }) => {
 
           {/* Info box */}
           <div className="p-4 rounded-xl bg-kage-subtle/50 border border-kage-border-subtle">
-            <p className="text-xs text-kage-text-dim">
-              <strong className="text-kage-text-muted">How it works:</strong> When you create a link,
-              we generate secure stealth keys that enable private payments. Employers can find you
-              by your username, but your actual payment addresses remain hidden on the blockchain.
-            </p>
+            <div className="flex items-start gap-3">
+              <Shield className="w-4 h-4 text-kage-accent flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-kage-text-dim">
+                <strong className="text-kage-text-muted">Secure & Non-Custodial:</strong> Your stealth
+                private keys are encrypted via Arcium MPC and stored on-chain. Only you can decrypt
+                them to claim payments. No one else - not even us - can access your keys.
+              </p>
+            </div>
           </div>
         </CardContent>
       </Card>

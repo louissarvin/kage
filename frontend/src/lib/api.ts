@@ -175,6 +175,52 @@ export interface PrepareClaimResponse {
   programId: string
 }
 
+export interface PrepareVaultWriteResponse {
+  vaultPda: string
+  signPda: string
+  computationOffset: string
+  encryptedSpendLo: number[]
+  encryptedSpendHi: number[]
+  encryptedViewLo: number[]
+  encryptedViewHi: number[]
+  clientPubkey: number[]
+  userNonce: string
+  mxeNonce: string
+  arciumAccounts: {
+    mxeAccount: string
+    mempoolAccount: string
+    executingPool: string
+    computationAccount: string
+    compDefAccount: string
+    clusterAccount: string
+    poolAccount: string
+    clockAccount: string
+    arciumProgram: string
+  }
+  programId: string
+}
+
+export interface PrepareVaultReadResponse {
+  vaultPda: string
+  signPda: string
+  computationOffset: string
+  clientPubkey: number[]
+  sessionNonce: string
+  sessionPrivKeyHex: string // For decryption on frontend
+  arciumAccounts: {
+    mxeAccount: string
+    mempoolAccount: string
+    executingPool: string
+    computationAccount: string
+    compDefAccount: string
+    clusterAccount: string
+    poolAccount: string
+    clockAccount: string
+    arciumProgram: string
+  }
+  programId: string
+}
+
 // =============================================================================
 // API Client Class
 // =============================================================================
@@ -336,6 +382,48 @@ class ApiClient {
       metaAddress: ApiMetaAddress
     }>('/api/stealth/my-meta-address')
     return data.metaAddress
+  }
+
+  async prepareVaultWrite(
+    spendPrivKeyHex: string,
+    viewPrivKeyHex: string
+  ): Promise<PrepareVaultWriteResponse> {
+    const data = await this.request<{
+      success: boolean
+      data: PrepareVaultWriteResponse
+    }>('/api/stealth/prepare-vault-write', {
+      method: 'POST',
+      body: JSON.stringify({ spendPrivKeyHex, viewPrivKeyHex }),
+    })
+    return data.data
+  }
+
+  async prepareVaultRead(): Promise<PrepareVaultReadResponse> {
+    const data = await this.request<{
+      success: boolean
+      data: PrepareVaultReadResponse
+    }>('/api/stealth/prepare-vault-read', {
+      method: 'POST',
+    })
+    return data.data
+  }
+
+  async decryptVaultEvent(params: {
+    sessionPrivKeyHex: string
+    encryptedSpendLo: number[]
+    encryptedSpendHi: number[]
+    encryptedViewLo: number[]
+    encryptedViewHi: number[]
+    nonce: number[]
+  }): Promise<{ spendPrivKeyHex: string; viewPrivKeyHex: string }> {
+    const data = await this.request<{
+      success: boolean
+      data: { spendPrivKeyHex: string; viewPrivKeyHex: string }
+    }>('/api/stealth/decrypt-vault-event', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    })
+    return data.data
   }
 
   // ---------------------------------------------------------------------------
