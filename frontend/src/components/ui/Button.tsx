@@ -18,18 +18,18 @@ interface ButtonProps {
 
 const variants: Record<ButtonVariant, string> = {
   primary:
-    'bg-kage-accent text-kage-void hover:bg-kage-accent-dim border-transparent',
+    'bg-kage-accent text-white hover:bg-kage-accent-dim border-transparent',
   secondary:
-    'bg-kage-elevated text-kage-text hover:bg-kage-panel border-kage-border hover:border-kage-accent-dim',
+    'bg-[#1a1a1a] text-kage-text hover:bg-[#252525] border-transparent',
   ghost:
-    'bg-transparent text-kage-text-muted hover:text-kage-text hover:bg-kage-elevated border-transparent',
+    'bg-transparent text-kage-text-muted hover:text-kage-text hover:bg-[#1a1a1a] border-transparent',
   danger:
-    'bg-kage-error-dim text-kage-text hover:bg-kage-error border-transparent',
+    'bg-red-500/20 text-red-400 hover:bg-red-500/30 border-transparent',
 }
 
 const sizes: Record<ButtonSize, string> = {
-  sm: 'px-3 py-1.5 text-sm',
-  md: 'px-4 py-2 text-sm',
+  sm: 'px-4 py-2 text-sm',
+  md: 'px-5 py-2.5 text-md',
   lg: 'px-6 py-3 text-base',
 }
 
@@ -41,14 +41,13 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     return (
       <motion.button
         ref={ref}
-        whileHover={{ scale: disabled || loading ? 1 : 1.01 }}
         whileTap={{ scale: disabled || loading ? 1 : 0.98 }}
         transition={{ duration: 0.15 }}
         className={`
           inline-flex items-center justify-center gap-2
-          rounded-md border font-medium
-          transition-colors duration-200
-          disabled:opacity-50 disabled:cursor-not-allowed
+          rounded-3xl font-medium
+          transition-all duration-200
+          disabled:opacity-50 disabled:cursor-not-allowed py-3
           ${variants[variant]}
           ${sizes[size]}
           ${className}

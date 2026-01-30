@@ -1,10 +1,11 @@
-import type { FC } from "react";
+import { type FC, useState, useRef, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { Search } from "lucide-react";
 import logoImg from "@/assets/logo.png";
+import { formatAddress } from "@/lib/constants";
 
 const navItems = [
   { path: "/dashboard", label: "Dashboard" },
@@ -14,22 +15,49 @@ const navItems = [
 ];
 
 export const Header: FC = () => {
-  const { connected } = useWallet();
+  const { connected, publicKey, disconnect } = useWallet();
   const { setVisible } = useWalletModal();
   const location = useLocation();
   const navigate = useNavigate();
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Check if on landing page
   const isLandingPage = location.pathname === '/';
 
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setShowDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   const handleButtonClick = () => {
     if (isLandingPage) {
-      // On landing page: go to dashboard
       navigate('/dashboard');
+    } else if (connected) {
+      setShowDropdown(!showDropdown);
     } else {
-      // On other pages: open wallet modal
       setVisible(true);
     }
+  };
+
+  const handleCopyAddress = async () => {
+    if (publicKey) {
+      await navigator.clipboard.writeText(publicKey.toBase58());
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleDisconnect = () => {
+    disconnect();
+    setShowDropdown(false);
   };
 
   return (
@@ -46,11 +74,7 @@ export const Header: FC = () => {
           </Link>
 
           {/* Center - Nav Links in Pill Container */}
-          <motion.nav
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="hidden md:flex items-center gap-2 px-2 py-2 rounded-full bg-[#181818] backdrop-blur-md"
-          >
+          <nav className="hidden md:flex items-center gap-2 px-2 py-2 rounded-full bg-[#181818] backdrop-blur-md">
             {connected ? (
               navItems.map((item) => {
                 const isActive = location.pathname === item.path;
@@ -97,22 +121,55 @@ export const Header: FC = () => {
                 </a>
               </>
             )}
-          </motion.nav>
+          </nav>
 
-          {/* Right - Search + Launch App Button */}
+          {/* Right - Search + Wallet Button */}
           <div className="flex items-center gap-4">
             {/* Search */}
             <button className="p-2 text-kage-text-muted hover:text-kage-text transition-colors">
               <Search className="w-5 h-5" />
             </button>
 
-            {/* Dynamic Button */}
-            <button
-              onClick={handleButtonClick}
-              className="px-6 py-3 bg-kage-accent text-white font-medium rounded-full hover:bg-kage-accent-dim transition-all duration-200 hover:scale-[0.98]"
-            >
-              {isLandingPage ? 'Launch App' : 'Select Wallet'}
-            </button>
+            {/* Wallet Button with Dropdown */}
+            <div className="relative" ref={dropdownRef}>
+              <button
+                onClick={handleButtonClick}
+                className="px-6 py-3 bg-kage-accent text-white font-medium rounded-full hover:bg-kage-accent-dim transition-all duration-200 hover:scale-[0.98]"
+              >
+                {isLandingPage
+                  ? 'Launch App'
+                  : connected && publicKey
+                    ? formatAddress(publicKey.toBase58(), 4)
+                    : 'Select Wallet'
+                }
+              </button>
+
+              {/* Dropdown Menu */}
+              <AnimatePresence>
+                {showDropdown && connected && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.15 }}
+                    className="absolute right-0 mt-3 w-36 bg-[#181818] rounded-xl"
+                  >
+                    <button
+                      onClick={handleCopyAddress}
+                      className="w-full flex items-center px-4 py-2.5 text-sm text-kage-text-muted hover:text-kage-text rounded-t-xl hover:bg-kage-subtle transition-colors"
+                    >
+                      {copied ? 'Copied!' : 'Copy Address'}
+                    </button>
+                    <button
+                      onClick={handleDisconnect}
+                      className="w-full flex items-center px-4 py-2.5 text-sm text-red-400 rounded-b-xl hover:bg-kage-subtle transition-colors"
+                    >
+                      Disconnect
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
           </div>
         </div>
       </div>

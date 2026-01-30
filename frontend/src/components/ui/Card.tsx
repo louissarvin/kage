@@ -9,13 +9,13 @@ interface CardProps extends Omit<HTMLMotionProps<'div'>, 'ref'> {
 
 export const Card = forwardRef<HTMLDivElement, CardProps>(
   ({ variant = 'default', children, className = '', ...props }, ref) => {
-    const baseStyles = 'rounded-lg border border-kage-border-subtle'
+    const baseStyles = 'rounded-2xl'
 
     const variantStyles = {
-      default: 'bg-kage-surface',
-      elevated: 'bg-kage-elevated',
+      default: 'bg-[#141414]',
+      elevated: 'bg-[#1a1a1a]',
       interactive:
-        'bg-kage-surface hover:bg-kage-elevated hover:border-kage-border cursor-pointer',
+        'bg-[#141414] hover:bg-[#1a1a1a] cursor-pointer transition-colors duration-200',
     }
 
     return (
@@ -41,7 +41,7 @@ export const CardHeader = forwardRef<
 >(({ children, className = '', ...props }, ref) => (
   <div
     ref={ref}
-    className={`px-6 py-4 border-b border-kage-border-subtle ${className}`}
+    className={`px-6 py-4 ${className}`}
     {...props}
   >
     {children}
@@ -67,7 +67,7 @@ export const CardFooter = forwardRef<
 >(({ children, className = '', ...props }, ref) => (
   <div
     ref={ref}
-    className={`px-6 py-4 border-t border-kage-border-subtle ${className}`}
+    className={`px-6 py-4 ${className}`}
     {...props}
   >
     {children}

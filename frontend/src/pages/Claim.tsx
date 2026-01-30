@@ -1,9 +1,9 @@
 import type { FC } from 'react'
-import { useState } from 'react'
+import { useState, useRef, useLayoutEffect } from 'react'
 import { motion } from 'framer-motion'
+import gsap from 'gsap'
 import {
   Shield,
-  Lock,
   Unlock,
   CheckCircle,
   ArrowRight,
@@ -15,6 +15,7 @@ import { Layout } from '@/components/layout'
 type ClaimStep = 'select' | 'authorize' | 'process' | 'withdraw' | 'complete'
 
 export const Claim: FC = () => {
+  const containerRef = useRef<HTMLDivElement>(null)
   const [step, setStep] = useState<ClaimStep>('select')
   const [claimAmount, setClaimAmount] = useState('')
 
@@ -27,30 +28,38 @@ export const Claim: FC = () => {
 
   const currentStepIndex = steps.findIndex((s) => s.id === step)
 
+  // GSAP page animation
+  useLayoutEffect(() => {
+    const ctx = gsap.context(() => {
+      gsap.fromTo(
+        containerRef.current,
+        { opacity: 0, y: 20 },
+        { opacity: 1, y: 0, duration: 0.4, ease: 'power2.out' }
+      )
+      gsap.fromTo(
+        '.claim-section',
+        { opacity: 0, y: 15 },
+        { opacity: 1, y: 0, duration: 0.4, stagger: 0.1, ease: 'power2.out', delay: 0.1 }
+      )
+    }, containerRef)
+    return () => ctx.revert()
+  }, [])
+
   return (
     <Layout>
-      <div className="max-w-2xl mx-auto space-y-8">
+      <div ref={containerRef} className="max-w-2xl mx-auto space-y-8">
         {/* Header */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-center"
-        >
+        <div className="claim-section text-center">
           <h1 className="text-2xl font-semibold text-kage-text">
             Claim Vested Tokens
           </h1>
           <p className="mt-2 text-kage-text-muted">
             Securely claim your vested tokens using zero-knowledge proofs
           </p>
-        </motion.div>
+        </div>
 
         {/* Progress */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="flex items-center justify-between"
-        >
+        <div className="claim-section flex items-center justify-between">
           {steps.map((s, index) => (
             <div key={s.id} className="flex items-center">
               <div className="flex flex-col items-center">
@@ -100,7 +109,7 @@ export const Claim: FC = () => {
               )}
             </div>
           ))}
-        </motion.div>
+        </div>
 
         {/* Step content */}
         <motion.div
@@ -167,9 +176,6 @@ const SelectPositionStep: FC<{ onSelect: () => void }> = ({
       <CardContent>
         {positions.length === 0 ? (
           <div className="py-12 text-center">
-            <div className="w-12 h-12 rounded-lg bg-kage-subtle mx-auto mb-4 flex items-center justify-center">
-              <Lock className="w-6 h-6 text-kage-text-dim" />
-            </div>
             <p className="text-kage-text-muted">No claimable positions</p>
             <p className="text-sm text-kage-text-dim mt-1">
               You don't have any positions with claimable tokens

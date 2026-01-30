@@ -1,6 +1,6 @@
 import type { FC } from 'react'
-import { useState } from 'react'
-import { motion } from 'framer-motion'
+import { useState, useRef, useLayoutEffect } from 'react'
+import gsap from 'gsap'
 import {
   Building2,
   Plus,
@@ -23,18 +23,32 @@ const mockOrganizations: {
 }[] = []
 
 export const Organizations: FC = () => {
+  const containerRef = useRef<HTMLDivElement>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
 
+  // GSAP page animation
+  useLayoutEffect(() => {
+    const ctx = gsap.context(() => {
+      gsap.fromTo(
+        containerRef.current,
+        { opacity: 0, y: 20 },
+        { opacity: 1, y: 0, duration: 0.4, ease: 'power2.out' }
+      )
+      gsap.fromTo(
+        '.org-section',
+        { opacity: 0, y: 15 },
+        { opacity: 1, y: 0, duration: 0.4, stagger: 0.1, ease: 'power2.out', delay: 0.1 }
+      )
+    }, containerRef)
+    return () => ctx.revert()
+  }, [])
+
   return (
     <Layout>
-      <div className="space-y-6">
+      <div ref={containerRef} className="space-y-6">
         {/* Header */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
-        >
+        <div className="org-section flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold text-kage-text">
               Organizations
@@ -44,104 +58,79 @@ export const Organizations: FC = () => {
             </p>
           </div>
           <Button variant="primary" onClick={() => setShowCreateModal(true)}>
-            <Plus className="w-4 h-4" />
+            <Plus className="w-5 h-5" />
             Create Organization
           </Button>
-        </motion.div>
+        </div>
 
         {/* Search */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-        >
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-kage-text-dim" />
-            <input
-              type="text"
-              placeholder="Search organizations..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 bg-kage-elevated border border-kage-border rounded-md text-kage-text placeholder:text-kage-text-dim focus:outline-none focus:border-kage-accent-dim transition-colors"
-            />
-          </div>
-        </motion.div>
+        <div className="org-section relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-kage-text-dim" />
+          <input
+            type="text"
+            placeholder="Search organizations..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-10 pr-4 py-3 bg-[#1a1a1a] rounded-xl text-kage-text placeholder:text-kage-text-dim focus:outline-none transition-colors"
+          />
+        </div>
 
         {/* Organizations list */}
         {mockOrganizations.length === 0 ? (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-          >
-            <Card>
-              <CardContent className="py-16 text-center">
-                <div className="w-12 h-12 rounded-lg bg-kage-subtle mx-auto mb-4 flex items-center justify-center">
-                  <Building2 className="w-6 h-6 text-kage-text-dim" />
-                </div>
-                <h3 className="text-lg font-medium text-kage-text mb-2">
-                  No organizations yet
-                </h3>
-                <p className="text-sm text-kage-text-muted mb-6 max-w-sm mx-auto">
-                  Create your first organization to start setting up vesting
-                  schedules for your team.
-                </p>
-                <Button variant="primary" onClick={() => setShowCreateModal(true)}>
-                  <Plus className="w-4 h-4" />
-                  Create Organization
-                </Button>
-              </CardContent>
-            </Card>
-          </motion.div>
+          <Card>
+            <CardContent className="py-20 text-center">
+              <h3 className="text-lg font-medium text-kage-text mb-2">
+                No organizations yet
+              </h3>
+              <p className="text-sm text-kage-text-muted mb-6 max-w-sm mx-auto">
+                Create your first organization to start setting up vesting
+                schedules for your team.
+              </p>
+            </CardContent>
+          </Card>
         ) : (
           <div className="space-y-4">
-            {mockOrganizations.map((org, index) => (
-              <motion.div
-                key={org.publicKey}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.1 + index * 0.05 }}
-              >
-                <Card variant="interactive">
-                  <CardContent className="flex items-center justify-between">
-                    <div className="flex items-center gap-4">
-                      <div className="w-10 h-10 rounded-md bg-kage-accent-glow flex items-center justify-center">
-                        <Building2 className="w-5 h-5 text-kage-accent" />
-                      </div>
-                      <div>
-                        <h3 className="font-medium text-kage-text">
-                          {org.name || formatAddress(org.publicKey, 8)}
-                        </h3>
-                        <div className="flex items-center gap-4 mt-1 text-sm text-kage-text-muted">
-                          <span className="flex items-center gap-1">
-                            <Users className="w-3.5 h-3.5" />
-                            {org.positionCount} positions
-                          </span>
-                          <span className="flex items-center gap-1">
-                            <Calendar className="w-3.5 h-3.5" />
-                            {org.scheduleCount} schedules
-                          </span>
-                        </div>
+            {mockOrganizations.map((org) => (
+              <Card key={org.publicKey} variant="interactive">
+                <CardContent className="flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-md bg-kage-accent-glow flex items-center justify-center">
+                      <Building2 className="w-5 h-5 text-kage-accent" />
+                    </div>
+                    <div>
+                      <h3 className="font-medium text-kage-text">
+                        {org.name || formatAddress(org.publicKey, 8)}
+                      </h3>
+                      <div className="flex items-center gap-4 mt-1 text-sm text-kage-text-muted">
+                        <span className="flex items-center gap-1">
+                          <Users className="w-3.5 h-3.5" />
+                          {org.positionCount} positions
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <Calendar className="w-3.5 h-3.5" />
+                          {org.scheduleCount} schedules
+                        </span>
                       </div>
                     </div>
-                    <div className="flex items-center gap-3">
-                      <Badge variant={org.isActive ? 'success' : 'default'}>
-                        {org.isActive ? 'Active' : 'Inactive'}
-                      </Badge>
-                      <ChevronRight className="w-5 h-5 text-kage-text-dim" />
-                    </div>
-                  </CardContent>
-                </Card>
-              </motion.div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Badge variant={org.isActive ? 'success' : 'default'}>
+                      {org.isActive ? 'Active' : 'Inactive'}
+                    </Badge>
+                    <ChevronRight className="w-5 h-5 text-kage-text-dim" />
+                  </div>
+                </CardContent>
+              </Card>
             ))}
           </div>
         )}
 
-        {/* Create modal */}
-        {showCreateModal && (
-          <CreateOrganizationModal onClose={() => setShowCreateModal(false)} />
-        )}
       </div>
+
+      {/* Create modal - outside main content for proper overlay */}
+      {showCreateModal && (
+        <CreateOrganizationModal onClose={() => setShowCreateModal(false)} />
+      )}
     </Layout>
   )
 }
@@ -167,23 +156,15 @@ const CreateOrganizationModal: FC<CreateOrganizationModalProps> = ({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed top-0 left-0 w-screen h-screen z-[100] flex items-center justify-center">
       {/* Backdrop */}
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        className="absolute inset-0 bg-kage-void/80"
+      <div
+        className="absolute top-0 left-0 w-full h-full bg-black/80"
         onClick={onClose}
       />
 
       {/* Modal */}
-      <motion.div
-        initial={{ opacity: 0, scale: 0.95 }}
-        animate={{ opacity: 1, scale: 1 }}
-        exit={{ opacity: 0, scale: 0.95 }}
-        className="relative w-full max-w-md mx-4"
-      >
+      <div className="relative z-10 w-full max-w-md mx-4">
         <Card>
           <CardHeader>
             <h2 className="text-lg font-semibold text-kage-text">
@@ -223,7 +204,7 @@ const CreateOrganizationModal: FC<CreateOrganizationModalProps> = ({
             </div>
           </CardContent>
         </Card>
-      </motion.div>
+      </div>
     </div>
   )
 }

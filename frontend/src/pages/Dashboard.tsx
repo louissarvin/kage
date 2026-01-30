@@ -1,14 +1,10 @@
 import type { FC } from 'react'
+import { useRef, useLayoutEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { useWallet } from '@solana/wallet-adapter-react'
-import { motion } from 'framer-motion'
+import gsap from 'gsap'
 import {
-  Building2,
-  Clock,
-  Shield,
-  TrendingUp,
   ArrowRight,
-  Plus,
   Loader2,
   AlertCircle,
 } from 'lucide-react'
@@ -18,8 +14,9 @@ import { formatAddress, formatAmount } from '@/lib/constants'
 import { useOrganization, usePositions, usePositionAggregates } from '@/hooks'
 
 export const Dashboard: FC = () => {
+  const containerRef = useRef<HTMLDivElement>(null)
   const { publicKey, connected } = useWallet()
-  const { organization, organizationData, stats, loading: orgLoading, error: orgError } = useOrganization()
+  const { organization, organizationData: _organizationData, stats: _stats, loading: orgLoading, error: orgError } = useOrganization()
   const { positions, loading: posLoading } = usePositions(organization)
   const aggregates = usePositionAggregates(positions)
 
@@ -36,29 +33,41 @@ export const Dashboard: FC = () => {
       label: 'Active Positions',
       value: aggregates.activePositions.toString(),
       change: null,
-      icon: Clock,
     },
     {
       label: 'Total Vested',
       value: formatBN(aggregates.totalVested),
       subtext: 'tokens',
-      icon: TrendingUp,
     },
     {
       label: 'Claimable',
       value: formatBN(aggregates.totalClaimable),
       subtext: 'tokens',
-      icon: Shield,
     },
   ]
+
+  // GSAP page animation
+  useLayoutEffect(() => {
+    const ctx = gsap.context(() => {
+      gsap.fromTo(
+        containerRef.current,
+        { opacity: 0, y: 20 },
+        { opacity: 1, y: 0, duration: 0.4, ease: 'power2.out' }
+      )
+      // Stagger children
+      gsap.fromTo(
+        '.dashboard-section',
+        { opacity: 0, y: 15 },
+        { opacity: 1, y: 0, duration: 0.4, stagger: 0.1, ease: 'power2.out', delay: 0.1 }
+      )
+    }, containerRef)
+    return () => ctx.revert()
+  }, [connected])
 
   if (!connected) {
     return (
       <Layout>
-        <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
-          <div className="w-16 h-16 rounded-full bg-kage-subtle flex items-center justify-center mb-6">
-            <Shield className="w-8 h-8 text-kage-text-dim" />
-          </div>
+        <div className="flex flex-col items-center justify-center min-h-[80vh] text-center">
           <h1 className="text-2xl font-semibold text-kage-text mb-2">
             Connect Your Wallet
           </h1>
@@ -72,13 +81,9 @@ export const Dashboard: FC = () => {
 
   return (
     <Layout>
-      <div className="space-y-8">
+      <div ref={containerRef} className="space-y-8">
         {/* Welcome */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4 }}
-        >
+        <div className="dashboard-section">
           <h1 className="text-2xl font-semibold text-kage-text">Dashboard</h1>
           <p className="mt-1 text-kage-text-muted">
             Connected as{' '}
@@ -86,34 +91,23 @@ export const Dashboard: FC = () => {
               {publicKey ? formatAddress(publicKey.toBase58(), 6) : ''}
             </span>
           </p>
-        </motion.div>
+        </div>
 
         {/* Error display */}
         {orgError && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="p-4 rounded-lg bg-red-500/10 border border-red-500/20"
-          >
+          <div className="p-4 rounded-2xl bg-red-500/10">
             <div className="flex items-center gap-3">
               <AlertCircle className="w-5 h-5 text-red-400" />
               <p className="text-sm text-red-400">{orgError}</p>
             </div>
-          </motion.div>
+          </div>
         )}
 
         {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {statsData.map((stat, index) => {
-            const Icon = stat.icon
+        <div className="dashboard-section grid grid-cols-1 md:grid-cols-3 gap-4">
+          {statsData.map((stat) => {
             return (
-              <motion.div
-                key={stat.label}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.4, delay: index * 0.1 }}
-              >
-                <Card>
+              <Card key={stat.label}>
                   <CardContent className="flex items-start justify-between">
                     <div>
                       <p className="text-sm text-kage-text-muted">
@@ -136,167 +130,14 @@ export const Dashboard: FC = () => {
                         )}
                       </div>
                     </div>
-                    <div className="p-2 rounded-md bg-kage-subtle">
-                      <Icon className="w-5 h-5 text-kage-text-dim" />
-                    </div>
                   </CardContent>
                 </Card>
-              </motion.div>
             )
           })}
         </div>
 
-        {/* Quick actions */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Employer section */}
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4, delay: 0.3 }}
-          >
-            <Card>
-              <CardContent className="space-y-4">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-md bg-kage-accent-glow">
-                    <Building2 className="w-5 h-5 text-kage-accent" />
-                  </div>
-                  <div>
-                    <h2 className="text-lg font-medium text-kage-text">
-                      Employer
-                    </h2>
-                    <p className="text-sm text-kage-text-muted">
-                      {organizationData
-                        ? `Managing: ${organizationData.name}`
-                        : 'Create an organization to get started'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Organization stats */}
-                {stats && (
-                  <div className="grid grid-cols-2 gap-3 py-2">
-                    <div className="p-3 rounded-lg bg-kage-subtle">
-                      <p className="text-xs text-kage-text-muted">Schedules</p>
-                      <p className="text-lg font-semibold text-kage-text">
-                        {stats.totalSchedules}
-                      </p>
-                    </div>
-                    <div className="p-3 rounded-lg bg-kage-subtle">
-                      <p className="text-xs text-kage-text-muted">Vault Balance</p>
-                      <p className="text-lg font-semibold text-kage-text">
-                        {stats.vaultBalance ? formatBN(stats.vaultBalance) : '---'}
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                <div className="pt-2 space-y-3">
-                  {!organizationData ? (
-                    <Link to="/organizations/create">
-                      <Button variant="secondary" className="w-full justify-between">
-                        <span className="flex items-center gap-2">
-                          <Plus className="w-4 h-4" />
-                          Create Organization
-                        </span>
-                        <ArrowRight className="w-4 h-4" />
-                      </Button>
-                    </Link>
-                  ) : (
-                    <Link to="/organizations">
-                      <Button variant="secondary" className="w-full justify-between">
-                        <span className="flex items-center gap-2">
-                          <Building2 className="w-4 h-4" />
-                          Manage Organization
-                        </span>
-                        <ArrowRight className="w-4 h-4" />
-                      </Button>
-                    </Link>
-                  )}
-                  <Link to="/organizations">
-                    <Button variant="ghost" className="w-full justify-between">
-                      View All Organizations
-                      <ArrowRight className="w-4 h-4" />
-                    </Button>
-                  </Link>
-                </div>
-              </CardContent>
-            </Card>
-          </motion.div>
-
-          {/* Employee section */}
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4, delay: 0.4 }}
-          >
-            <Card>
-              <CardContent className="space-y-4">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-md bg-kage-accent-glow">
-                    <Shield className="w-5 h-5 text-kage-accent" />
-                  </div>
-                  <div>
-                    <h2 className="text-lg font-medium text-kage-text">
-                      Employee
-                    </h2>
-                    <p className="text-sm text-kage-text-muted">
-                      {aggregates.activePositions > 0
-                        ? `${aggregates.activePositions} active position${aggregates.activePositions > 1 ? 's' : ''}`
-                        : 'View positions and claim vested tokens'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Position summary */}
-                {aggregates.activePositions > 0 && (
-                  <div className="grid grid-cols-2 gap-3 py-2">
-                    <div className="p-3 rounded-lg bg-kage-subtle">
-                      <p className="text-xs text-kage-text-muted">Total Claimed</p>
-                      <p className="text-lg font-semibold text-kage-text">
-                        {formatBN(aggregates.totalClaimed)}
-                      </p>
-                    </div>
-                    <div className="p-3 rounded-lg bg-kage-accent-glow">
-                      <p className="text-xs text-kage-text-muted">Ready to Claim</p>
-                      <p className="text-lg font-semibold text-kage-accent">
-                        {formatBN(aggregates.totalClaimable)}
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                <div className="pt-2 space-y-3">
-                  <Link to="/positions">
-                    <Button variant="secondary" className="w-full justify-between">
-                      <span className="flex items-center gap-2">
-                        <Clock className="w-4 h-4" />
-                        My Positions
-                      </span>
-                      <ArrowRight className="w-4 h-4" />
-                    </Button>
-                  </Link>
-                  <Link to="/claim">
-                    <Button
-                      variant={aggregates.totalClaimable.gtn(0) ? 'primary' : 'ghost'}
-                      className="w-full justify-between"
-                    >
-                      Claim Tokens
-                      <ArrowRight className="w-4 h-4" />
-                    </Button>
-                  </Link>
-                </div>
-              </CardContent>
-            </Card>
-          </motion.div>
-        </div>
-
         {/* Recent positions */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.5 }}
-        >
-          <Card>
+        <Card className="dashboard-section">
             <CardContent>
               <h2 className="text-lg font-medium text-kage-text mb-4">
                 Recent Positions
@@ -358,7 +199,6 @@ export const Dashboard: FC = () => {
               )}
             </CardContent>
           </Card>
-        </motion.div>
       </div>
     </Layout>
   )
