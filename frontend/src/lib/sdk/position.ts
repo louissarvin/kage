@@ -2,13 +2,13 @@
  * Position SDK
  *
  * Functions for creating and managing vesting positions.
+ * Note: Amounts are encrypted via Arcium MPC, so vesting calculations
+ * cannot be done on the frontend.
  */
 
-import { PublicKey, SystemProgram } from '@solana/web3.js'
+import { PublicKey } from '@solana/web3.js'
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token'
 import {
-  findPositionPda,
-  findSchedulePda,
   findVaultAuthorityPda,
   findVaultPda,
   findClaimAuthorizationPda,
@@ -17,8 +17,9 @@ import {
 import type {
   ShadowVestProgram,
   VestingPosition,
+  VestingSchedule,
 } from './program'
-import { fetchOrganization } from './organization'
+import { fetchOrganization, fetchSchedule } from './organization'
 
 // =============================================================================
 // Position Management
@@ -27,87 +28,9 @@ import { fetchOrganization } from './organization'
 export interface CreatePositionParams {
   scheduleId: number
   beneficiaryCommitment: Uint8Array // 32-byte commitment hash
-  totalAmount: BN
-  startTime: BN
-  cliffDuration: BN
-  vestingDuration: BN
-}
-
-/**
- * Create a new vesting position
- */
-export async function createVestingPosition(
-  program: ShadowVestProgram,
-  organization: PublicKey,
-  params: CreatePositionParams
-): Promise<{ signature: string; position: PublicKey; positionId: number }> {
-  const admin = program.provider.publicKey!
-  const orgData = await fetchOrganization(program, organization)
-  if (!orgData) throw new Error('Organization not found')
-
-  const positionId = orgData.totalPositions.toNumber()
-  const [position] = findPositionPda(organization, positionId)
-  const [schedule] = findSchedulePda(organization, params.scheduleId)
-
-  const signature = await program.methods
-    .createVestingPosition(
-      Array.from(params.beneficiaryCommitment),
-      params.totalAmount,
-      params.startTime,
-      params.cliffDuration,
-      params.vestingDuration
-    )
-    .accounts({
-      admin,
-      organization,
-      schedule,
-      position,
-      systemProgram: SystemProgram.programId,
-    })
-    .rpc()
-
-  return { signature, position, positionId }
-}
-
-/**
- * Create a stealth vesting position (privacy-preserving)
- */
-export async function createStealthVestingPosition(
-  program: ShadowVestProgram,
-  organization: PublicKey,
-  params: CreatePositionParams & {
-    stealthAddress: PublicKey
-    ephemeralPubkey: Uint8Array
-  }
-): Promise<{ signature: string; position: PublicKey; positionId: number }> {
-  const admin = program.provider.publicKey!
-  const orgData = await fetchOrganization(program, organization)
-  if (!orgData) throw new Error('Organization not found')
-
-  const positionId = orgData.totalPositions.toNumber()
-  const [position] = findPositionPda(organization, positionId)
-  const [schedule] = findSchedulePda(organization, params.scheduleId)
-
-  const signature = await program.methods
-    .createStealthVestingPosition(
-      Array.from(params.beneficiaryCommitment),
-      params.totalAmount,
-      params.startTime,
-      params.cliffDuration,
-      params.vestingDuration,
-      Array.from(params.ephemeralPubkey)
-    )
-    .accounts({
-      admin,
-      organization,
-      schedule,
-      position,
-      stealthAddress: params.stealthAddress,
-      systemProgram: SystemProgram.programId,
-    })
-    .rpc()
-
-  return { signature, position, positionId }
+  encryptedAmount: Uint8Array // Encrypted with MXE public key
+  clientPubkey: Uint8Array // Client's x25519 public key
+  nonce: BN
 }
 
 /**
@@ -133,20 +56,25 @@ export async function fetchPositionsByOrganization(
   program: ShadowVestProgram,
   organization: PublicKey
 ): Promise<Array<{ publicKey: PublicKey; account: VestingPosition }>> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const accounts = await (program.account as any).vestingPosition.all([
-    {
-      memcmp: {
-        offset: 8, // After discriminator
-        bytes: organization.toBase58(),
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const accounts = await (program.account as any).vestingPosition.all([
+      {
+        memcmp: {
+          offset: 8, // After discriminator
+          bytes: organization.toBase58(),
+        },
       },
-    },
-  ])
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return accounts.map((acc: any) => ({
-    publicKey: acc.publicKey,
-    account: acc.account as VestingPosition,
-  }))
+    ])
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return accounts.map((acc: any) => ({
+      publicKey: acc.publicKey,
+      account: acc.account as VestingPosition,
+    }))
+  } catch (err) {
+    console.warn('Failed to fetch positions, returning empty:', err)
+    return []
+  }
 }
 
 /**
@@ -157,136 +85,106 @@ export async function fetchPositionsByCommitment(
   program: ShadowVestProgram,
   commitment: Uint8Array
 ): Promise<Array<{ publicKey: PublicKey; account: VestingPosition }>> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const allPositions = await (program.account as any).vestingPosition.all()
-  return allPositions
+  try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    .filter((acc: any) => {
-      const pos = acc.account as VestingPosition
-      return Buffer.from(pos.beneficiaryCommitment).equals(Buffer.from(commitment))
-    })
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    .map((acc: any) => ({
-      publicKey: acc.publicKey,
-      account: acc.account as VestingPosition,
-    }))
+    const allPositions = await (program.account as any).vestingPosition.all()
+    return allPositions
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((acc: any) => {
+        const pos = acc.account as VestingPosition
+        return Buffer.from(pos.beneficiaryCommitment).equals(Buffer.from(commitment))
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .map((acc: any) => ({
+        publicKey: acc.publicKey,
+        account: acc.account as VestingPosition,
+      }))
+  } catch (err) {
+    console.error('Failed to fetch positions by commitment:', err)
+    return []
+  }
 }
 
 // =============================================================================
-// Vesting Calculations
+// Vesting Calculations (Based on Schedule, not Position)
+// Note: Actual amounts are encrypted - these calculations are for UI display only
 // =============================================================================
 
 /**
- * Calculate vested amount for a position at a given time
+ * Calculate vesting progress based on schedule timing
+ * Returns 0-100 percentage
  */
-export function calculateVestedAmount(
-  position: VestingPosition,
-  currentTime: number
-): BN {
-  const startTime = position.startTime.toNumber()
-  const cliffDuration = position.cliffDuration.toNumber()
-  const vestingDuration = position.vestingDuration.toNumber()
-  const totalAmount = position.totalAmount
+export function calculateVestingProgress(
+  schedule: VestingSchedule,
+  startTimestamp: BN,
+  currentTime: number = Math.floor(Date.now() / 1000)
+): number {
+  const startTime = startTimestamp.toNumber()
+  const cliffDuration = schedule.cliffDuration.toNumber()
+  const totalDuration = schedule.totalDuration.toNumber()
 
-  // Before cliff - nothing vested
+  // Before cliff - 0%
   if (currentTime < startTime + cliffDuration) {
-    return new BN(0)
+    return 0
   }
 
-  // After full vesting - everything vested
-  if (currentTime >= startTime + vestingDuration) {
-    return totalAmount
+  // After full vesting - 100%
+  if (currentTime >= startTime + totalDuration) {
+    return 100
   }
 
   // Linear vesting between cliff and end
-  const elapsedAfterCliff = currentTime - (startTime + cliffDuration)
-  const vestingAfterCliff = vestingDuration - cliffDuration
+  const elapsed = currentTime - startTime
+  const progress = (elapsed / totalDuration) * 100
 
-  if (vestingAfterCliff <= 0) {
-    return totalAmount
-  }
-
-  // Calculate proportional amount
-  const vestedAmount = totalAmount
-    .mul(new BN(elapsedAfterCliff))
-    .div(new BN(vestingAfterCliff))
-
-  return vestedAmount
-}
-
-/**
- * Calculate claimable amount (vested - already claimed)
- */
-export function calculateClaimableAmount(
-  position: VestingPosition,
-  currentTime: number
-): BN {
-  const vested = calculateVestedAmount(position, currentTime)
-  const claimed = position.claimedAmount
-
-  if (vested.lte(claimed)) {
-    return new BN(0)
-  }
-
-  return vested.sub(claimed)
-}
-
-/**
- * Get position vesting progress (0-100%)
- */
-export function getVestingProgress(
-  position: VestingPosition,
-  currentTime: number
-): number {
-  const vested = calculateVestedAmount(position, currentTime)
-  const total = position.totalAmount
-
-  if (total.isZero()) return 100
-
-  return vested.mul(new BN(100)).div(total).toNumber()
+  return Math.min(100, Math.max(0, Math.floor(progress)))
 }
 
 // =============================================================================
-// Position Stats
+// Position Stats (for UI display)
 // =============================================================================
 
 export interface PositionStats {
-  totalAmount: BN
-  claimedAmount: BN
-  vestedAmount: BN
-  claimableAmount: BN
   vestingProgress: number
   isFullyVested: boolean
-  isFullyClaimed: boolean
   cliffEndTime: number
   vestingEndTime: number
+  // Note: amounts are encrypted - these are placeholders
+  totalAmount: BN
+  claimedAmount: BN
+  claimableAmount: BN
 }
 
 /**
- * Get comprehensive stats for a position
+ * Get stats for a position (UI display purposes)
+ * Note: Actual amounts require MPC decryption
  */
-export function getPositionStats(
+export async function getPositionStats(
+  program: ShadowVestProgram,
   position: VestingPosition,
   currentTime: number = Math.floor(Date.now() / 1000)
-): PositionStats {
-  const startTime = position.startTime.toNumber()
-  const cliffDuration = position.cliffDuration.toNumber()
-  const vestingDuration = position.vestingDuration.toNumber()
+): Promise<PositionStats> {
+  // Fetch schedule for timing info
+  const schedule = await fetchSchedule(program, position.schedule)
 
-  const vestedAmount = calculateVestedAmount(position, currentTime)
-  const claimableAmount = calculateClaimableAmount(position, currentTime)
-  const vestingProgress = getVestingProgress(position, currentTime)
+  const startTime = position.startTimestamp.toNumber()
+  const cliffDuration = schedule?.cliffDuration.toNumber() || 0
+  const totalDuration = schedule?.totalDuration.toNumber() || 0
+
+  const vestingProgress = schedule
+    ? calculateVestingProgress(schedule, position.startTimestamp, currentTime)
+    : 0
 
   return {
-    totalAmount: position.totalAmount,
-    claimedAmount: position.claimedAmount,
-    vestedAmount,
-    claimableAmount,
     vestingProgress,
     isFullyVested: vestingProgress >= 100,
-    isFullyClaimed: position.claimedAmount.gte(position.totalAmount),
     cliffEndTime: startTime + cliffDuration,
-    vestingEndTime: startTime + vestingDuration,
+    vestingEndTime: startTime + totalDuration,
+    // Amounts are encrypted - return zero/placeholder values
+    // Real values would come from MPC callback or decryption
+    totalAmount: new BN(0),
+    claimedAmount: new BN(0),
+    claimableAmount: new BN(0),
   }
 }
 

@@ -43,6 +43,8 @@ export {
   fetchSchedule,
   fetchSchedulesByOrganization,
   getOrganizationStats,
+  hashName,
+  getNameHashHex,
 } from './organization'
 
 export type {
@@ -53,14 +55,10 @@ export type {
 
 // Position management
 export {
-  createVestingPosition,
-  createStealthVestingPosition,
   fetchPosition,
   fetchPositionsByOrganization,
   fetchPositionsByCommitment,
-  calculateVestedAmount,
-  calculateClaimableAmount,
-  getVestingProgress,
+  calculateVestingProgress,
   getPositionStats,
   withdrawTokens,
 } from './position'

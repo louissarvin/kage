@@ -162,15 +162,17 @@ export function findNullifierPda(
 }
 
 // =============================================================================
-// Account Types (simplified versions of IDL types)
+// Account Types (matching on-chain IDL structure)
 // =============================================================================
 
 export interface Organization {
   admin: PublicKey
-  name: string
+  nameHash: number[] // [u8; 32] - SHA256 hash of name
+  scheduleCount: BN
+  positionCount: BN
+  compressedPositionCount: BN
+  treasury: PublicKey
   tokenMint: PublicKey
-  totalPositions: BN
-  totalSchedules: BN
   isActive: boolean
   bump: number
 }
@@ -178,11 +180,9 @@ export interface Organization {
 export interface VestingSchedule {
   organization: PublicKey
   scheduleId: BN
-  name: string
-  totalAmount: BN
-  startTime: BN
   cliffDuration: BN
-  vestingDuration: BN
+  totalDuration: BN
+  vestingInterval: BN
   isActive: boolean
   bump: number
 }
@@ -191,13 +191,12 @@ export interface VestingPosition {
   organization: PublicKey
   schedule: PublicKey
   positionId: BN
-  beneficiaryCommitment: Uint8Array
-  totalAmount: BN
-  claimedAmount: BN
-  startTime: BN
-  cliffDuration: BN
-  vestingDuration: BN
+  beneficiaryCommitment: number[] // [u8; 32]
+  startTimestamp: BN
+  encryptedTotalAmount: number[] // [u8; 32] - encrypted
+  encryptedClaimedAmount: number[] // [u8; 32] - encrypted
   isActive: boolean
+  isFullyClaimed: boolean
   bump: number
 }
 

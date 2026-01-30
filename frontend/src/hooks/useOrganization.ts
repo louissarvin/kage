@@ -2,12 +2,14 @@
  * useOrganization Hook
  *
  * Provides organization data and management functions.
+ * Integrates with both on-chain data and backend API.
  */
 
 import { useState, useEffect, useCallback } from 'react'
 import { PublicKey } from '@solana/web3.js'
 import { useWallet } from '@solana/wallet-adapter-react'
 import { useProgram } from './useProgram'
+import { api } from '@/lib/api'
 import {
   fetchOrganizationByAdmin,
   fetchAllOrganizations,
@@ -18,6 +20,7 @@ import {
   depositToVault as deposit,
   createVestingSchedule as createSchedule,
   BN,
+  getNameHashHex,
 } from '@/lib/sdk'
 import type {
   Organization,
@@ -107,16 +110,35 @@ export function useOrganization(): UseOrganizationResult {
     refresh()
   }, [refresh])
 
-  // Create organization
+  // Create organization (on-chain + backend linking)
   const createOrganization = useCallback(
     async (params: CreateOrganizationParams): Promise<string> => {
-      if (!program) throw new Error('Wallet not connected')
+      if (!program || !publicKey) throw new Error('Wallet not connected')
 
+      // Create on-chain
       const result = await createOrg(program, params)
+
+      // Link to backend (if authenticated)
+      if (api.isAuthenticated()) {
+        try {
+          const nameHash = await getNameHashHex(params.name)
+          await api.linkOrganization(
+            result.organization.toBase58(),
+            publicKey.toBase58(),
+            nameHash,
+            params.tokenMint.toBase58(),
+            result.organization.toBase58() // treasury is derived from org
+          )
+        } catch (err) {
+          console.warn('Failed to link organization to backend:', err)
+          // Don't fail the whole operation if backend linking fails
+        }
+      }
+
       await refresh()
       return result.signature
     },
-    [program, refresh]
+    [program, publicKey, refresh]
   )
 
   // Initialize vault

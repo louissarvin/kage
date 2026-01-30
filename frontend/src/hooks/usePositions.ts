@@ -2,6 +2,7 @@
  * usePositions Hook
  *
  * Provides vesting position data and management.
+ * Note: Amounts are encrypted via Arcium MPC - displayed values are placeholders.
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
@@ -11,13 +12,11 @@ import {
   fetchPositionsByOrganization,
   fetchPosition,
   getPositionStats,
-  createVestingPosition as createPosition,
   BN,
 } from '@/lib/sdk'
 import type {
   VestingPosition,
   PositionStats,
-  CreatePositionParams,
 } from '@/lib/sdk'
 
 export interface PositionWithStats {
@@ -31,7 +30,6 @@ export interface UsePositionsResult {
   loading: boolean
   error: string | null
   refresh: () => Promise<void>
-  createPosition: (params: CreatePositionParams) => Promise<{ signature: string; positionId: number }>
 }
 
 /**
@@ -57,11 +55,14 @@ export function usePositions(organization: PublicKey | null): UsePositionsResult
       const positionsResult = await fetchPositionsByOrganization(program, organization)
       const currentTime = Math.floor(Date.now() / 1000)
 
-      const positionsWithStats: PositionWithStats[] = positionsResult.map((pos) => ({
-        publicKey: pos.publicKey,
-        account: pos.account,
-        stats: getPositionStats(pos.account, currentTime),
-      }))
+      // Fetch stats for each position (async because it needs to fetch schedule)
+      const positionsWithStats: PositionWithStats[] = await Promise.all(
+        positionsResult.map(async (pos) => ({
+          publicKey: pos.publicKey,
+          account: pos.account,
+          stats: await getPositionStats(program, pos.account, currentTime),
+        }))
+      )
 
       // Sort by position ID descending (newest first)
       positionsWithStats.sort((a, b) =>
@@ -81,40 +82,11 @@ export function usePositions(organization: PublicKey | null): UsePositionsResult
     refresh()
   }, [refresh])
 
-  // Auto-refresh stats every minute
-  useEffect(() => {
-    if (positions.length === 0) return
-
-    const interval = setInterval(() => {
-      const currentTime = Math.floor(Date.now() / 1000)
-      setPositions((prev) =>
-        prev.map((pos) => ({
-          ...pos,
-          stats: getPositionStats(pos.account, currentTime),
-        }))
-      )
-    }, 60000) // Every minute
-
-    return () => clearInterval(interval)
-  }, [positions.length])
-
-  const createPositionHandler = useCallback(
-    async (params: CreatePositionParams): Promise<{ signature: string; positionId: number }> => {
-      if (!program || !organization) throw new Error('Organization not found')
-
-      const result = await createPosition(program, organization, params)
-      await refresh()
-      return { signature: result.signature, positionId: result.positionId }
-    },
-    [program, organization, refresh]
-  )
-
   return {
     positions,
     loading,
     error,
     refresh,
-    createPosition: createPositionHandler,
   }
 }
 
@@ -143,7 +115,7 @@ export function usePosition(positionPubkey: PublicKey | null) {
       const positionData = await fetchPosition(program, positionPubkey)
       if (positionData) {
         setPosition(positionData)
-        setStats(getPositionStats(positionData))
+        setStats(await getPositionStats(program, positionData))
       } else {
         setPosition(null)
         setStats(null)
@@ -165,6 +137,7 @@ export function usePosition(positionPubkey: PublicKey | null) {
 
 /**
  * Hook to get aggregated stats across all positions
+ * Note: Amounts are placeholders since actual values are encrypted
  */
 export function usePositionAggregates(positions: PositionWithStats[]) {
   return useMemo(() => {
@@ -178,26 +151,21 @@ export function usePositionAggregates(positions: PositionWithStats[]) {
       }
     }
 
-    let totalVested = new BN(0)
-    let totalClaimed = new BN(0)
-    let totalClaimable = new BN(0)
     let activePositions = 0
 
     for (const pos of positions) {
       if (pos.account.isActive) {
         activePositions++
       }
-      totalVested = totalVested.add(pos.stats.vestedAmount)
-      totalClaimed = totalClaimed.add(pos.stats.claimedAmount)
-      totalClaimable = totalClaimable.add(pos.stats.claimableAmount)
     }
 
+    // Note: Amounts are encrypted via MPC - these are placeholders
     return {
       totalPositions: positions.length,
       activePositions,
-      totalVested,
-      totalClaimed,
-      totalClaimable,
+      totalVested: new BN(0),
+      totalClaimed: new BN(0),
+      totalClaimable: new BN(0),
     }
   }, [positions])
 }

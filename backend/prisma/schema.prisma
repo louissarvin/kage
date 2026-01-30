@@ -1,0 +1,231 @@
+// ShadowVest Backend Database Schema
+// Privacy-first payroll and vesting protocol
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// User & Authentication
+// ============================================================================
+
+model User {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  wallets       UserWallet[]
+  links         UserLink[]
+  organizations Organization[]
+
+  @@map("users")
+}
+
+model UserWallet {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  chain   Chain  @default(SOLANA)
+  address String @unique
+
+  // Stealth meta keys (PUBLIC KEYS ONLY - private keys in Arcium MPC)
+  metaSpendPub String? // Base58 encoded Ed25519 public key
+  metaViewPub  String? // Base58 encoded Ed25519 public key
+
+  // Reference to Arcium MPC stored private keys
+  arciumKeyId String? @unique // ID to retrieve keys from Arcium
+
+  // Links associated with this wallet's stealth keys
+  links UserLink[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([address])
+  @@map("user_wallets")
+}
+
+enum Chain {
+  SOLANA
+  SUI
+}
+
+// ============================================================================
+// Link System (kage.ink/username)
+// ============================================================================
+
+model UserLink {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Link identifier
+  slug String @unique // "alice" for kage.ink/alice
+
+  // Display info
+  label       String?
+  description String?
+
+  // Which wallet's stealth keys to use for this link
+  walletId String
+  wallet   UserWallet @relation(fields: [walletId], references: [id])
+
+  // Status
+  isActive Boolean @default(true)
+
+  // Stats
+  positionsReceived Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([slug])
+  @@map("user_links")
+}
+
+// ============================================================================
+// Organization (cached from on-chain)
+// ============================================================================
+
+model Organization {
+  id String @id @default(uuid())
+
+  // On-chain reference
+  pubkey      String @unique // Organization PDA
+  adminWallet String // Admin wallet address
+
+  // Cached on-chain data
+  nameHash  String // Hex encoded [u8; 32]
+  tokenMint String
+  treasury  String
+  isActive  Boolean @default(true)
+
+  // Owner in our system (if registered)
+  adminUserId String?
+  adminUser   User?   @relation(fields: [adminUserId], references: [id])
+
+  // Cached stats
+  scheduleCount Int @default(0)
+  positionCount Int @default(0)
+
+  // Schedules and positions
+  schedules VestingSchedule[]
+  positions VestingPosition[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([adminWallet])
+  @@map("organizations")
+}
+
+// ============================================================================
+// Vesting Schedule (cached from on-chain)
+// ============================================================================
+
+model VestingSchedule {
+  id String @id @default(uuid())
+
+  // On-chain reference
+  pubkey         String       @unique // Schedule PDA
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  // Schedule parameters (cached)
+  scheduleIndex   Int
+  cliffDuration   BigInt // seconds
+  totalDuration   BigInt // seconds
+  vestingInterval BigInt // seconds
+
+  // Positions using this schedule
+  positions VestingPosition[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([organizationId])
+  @@map("vesting_schedules")
+}
+
+// ============================================================================
+// Vesting Position (cached from on-chain + ownership info)
+// ============================================================================
+
+model VestingPosition {
+  id String @id @default(uuid())
+
+  // On-chain reference
+  pubkey         String          @unique // Position PDA
+  organizationId String
+  organization   Organization    @relation(fields: [organizationId], references: [id])
+  scheduleId     String
+  schedule       VestingSchedule @relation(fields: [scheduleId], references: [id])
+
+  // Stealth ownership
+  stealthOwner String // Stealth public key (on-chain)
+  ephemeralPub String // For deriving stealth keypair
+
+  // Ownership resolution (set after scanning)
+  ownerLinkId   String? // Which link this position belongs to
+  ownerWalletId String? // Resolved owner wallet
+
+  // Encrypted data references (stored in Arcium)
+  arciumAmountId String? // Reference to encrypted amount in Arcium
+
+  // Cached timing data
+  startTimestamp BigInt
+
+  // Status
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([organizationId])
+  @@index([stealthOwner])
+  @@index([ownerWalletId])
+  @@map("vesting_positions")
+}
+
+// ============================================================================
+// Nonce Store (for replay attack prevention)
+// ============================================================================
+
+model AuthNonce {
+  id        String   @id @default(uuid())
+  nonce     String   @unique
+  usedAt    DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([nonce])
+  @@index([expiresAt])
+  @@map("auth_nonces")
+}
+
+// ============================================================================
+// Audit Log
+// ============================================================================
+
+model AuditLog {
+  id String @id @default(uuid())
+
+  action        String // "LINK_CREATED", "POSITION_CLAIMED", etc.
+  userId        String?
+  walletAddress String?
+
+  metadata Json? // Additional context
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@map("audit_logs")
+}

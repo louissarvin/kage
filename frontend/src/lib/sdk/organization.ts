@@ -4,7 +4,7 @@
  * Functions for creating and managing organizations.
  */
 
-import { PublicKey, SystemProgram } from '@solana/web3.js'
+import { Keypair, PublicKey, SystemProgram } from '@solana/web3.js'
 import { TOKEN_PROGRAM_ID, getAssociatedTokenAddress } from '@solana/spl-token'
 import {
   findOrganizationPda,
@@ -20,12 +20,35 @@ import type {
 } from './program'
 
 // =============================================================================
+// Helper Functions
+// =============================================================================
+
+/**
+ * Hash a name to a 32-byte array using SHA-256
+ */
+export async function hashName(name: string): Promise<number[]> {
+  const encoder = new TextEncoder()
+  const data = encoder.encode(name)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+  return Array.from(new Uint8Array(hashBuffer))
+}
+
+/**
+ * Get name hash as hex string (for backend API)
+ */
+export async function getNameHashHex(name: string): Promise<string> {
+  const hashArray = await hashName(name)
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+// =============================================================================
 // Organization Management
 // =============================================================================
 
 export interface CreateOrganizationParams {
   name: string
   tokenMint: PublicKey
+  treasury?: PublicKey // Optional - will generate random if not provided
 }
 
 /**
@@ -38,12 +61,17 @@ export async function createOrganization(
   const admin = program.provider.publicKey!
   const [organization] = findOrganizationPda(admin)
 
+  // Hash the name to 32-byte array
+  const nameHash = await hashName(params.name)
+
+  // Use provided treasury or generate a random one
+  const treasury = params.treasury || Keypair.generate().publicKey
+
   const signature = await program.methods
-    .createOrganization(params.name)
+    .createOrganization(nameHash, treasury, params.tokenMint)
     .accounts({
       admin,
       organization,
-      tokenMint: params.tokenMint,
       systemProgram: SystemProgram.programId,
     })
     .rpc()
@@ -82,18 +110,33 @@ export async function fetchOrganizationByAdmin(
 
 /**
  * Fetch all organizations (paginated)
+ * Uses dataSize filter to only fetch accounts with the current schema (162 bytes)
+ * This avoids decode errors from old accounts created with a different schema
  */
 export async function fetchAllOrganizations(
   program: ShadowVestProgram,
   limit = 100
 ): Promise<Array<{ publicKey: PublicKey; account: Organization }>> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const accounts = await (program.account as any).organization.all()
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return accounts.slice(0, limit).map((acc: any) => ({
-    publicKey: acc.publicKey,
-    account: acc.account as Organization,
-  }))
+  try {
+    // Filter by data size to only get accounts with current schema
+    // Old accounts may have 154 bytes (missing compressed_position_count field)
+    // Current schema requires 162 bytes
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const accounts = await (program.account as any).organization.all([
+      {
+        dataSize: 162, // Only fetch accounts with current schema size
+      },
+    ])
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return accounts.slice(0, limit).map((acc: any) => ({
+      publicKey: acc.publicKey,
+      account: acc.account as Organization,
+    }))
+  } catch (err) {
+    // If .all() fails, return empty array
+    console.warn('Failed to fetch all organizations, returning empty:', err)
+    return []
+  }
 }
 
 // =============================================================================
@@ -167,11 +210,9 @@ export async function depositToVault(
 // =============================================================================
 
 export interface CreateScheduleParams {
-  name: string
-  totalAmount: BN
-  startTime: BN
   cliffDuration: BN
-  vestingDuration: BN
+  totalDuration: BN
+  vestingInterval: BN
 }
 
 /**
@@ -186,16 +227,14 @@ export async function createVestingSchedule(
   const orgData = await fetchOrganization(program, organization)
   if (!orgData) throw new Error('Organization not found')
 
-  const scheduleId = orgData.totalSchedules.toNumber()
+  const scheduleId = orgData.scheduleCount.toNumber()
   const [schedule] = findSchedulePda(organization, scheduleId)
 
   const signature = await program.methods
     .createVestingSchedule(
-      params.name,
-      params.totalAmount,
-      params.startTime,
       params.cliffDuration,
-      params.vestingDuration
+      params.totalDuration,
+      params.vestingInterval
     )
     .accounts({
       admin,
@@ -255,8 +294,9 @@ export async function fetchSchedulesByOrganization(
  * Get organization stats
  */
 export interface OrganizationStats {
-  totalSchedules: number
-  totalPositions: number
+  scheduleCount: number
+  positionCount: number
+  compressedPositionCount: number
   vaultBalance: BN | null
 }
 
@@ -278,8 +318,9 @@ export async function getOrganizationStats(
   }
 
   return {
-    totalSchedules: orgData.totalSchedules.toNumber(),
-    totalPositions: orgData.totalPositions.toNumber(),
+    scheduleCount: orgData.scheduleCount.toNumber(),
+    positionCount: orgData.positionCount.toNumber(),
+    compressedPositionCount: orgData.compressedPositionCount.toNumber(),
     vaultBalance,
   }
 }

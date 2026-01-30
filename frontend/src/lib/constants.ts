@@ -6,6 +6,9 @@ export const PROGRAM_ID = new PublicKey('3bPHRjdQb1a6uxE5TAVwJRMBCLdjAwsorNKJgwA
 // Cluster configuration
 export const CLUSTER_URL = import.meta.env.VITE_CLUSTER_URL || 'https://api.devnet.solana.com'
 
+// Backend API URL
+export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001'
+
 // Precision for vesting calculations (matches contract)
 export const VESTING_PRECISION = 1_000_000n
 
