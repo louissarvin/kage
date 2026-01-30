@@ -34,6 +34,7 @@ export type {
 // Organization management
 export {
   createOrganization,
+  createOrganizationWithVault,
   fetchOrganization,
   fetchOrganizationByAdmin,
   fetchAllOrganizations,
@@ -49,12 +50,16 @@ export {
 
 export type {
   CreateOrganizationParams,
+  CreateOrganizationWithVaultParams,
   CreateScheduleParams,
   OrganizationStats,
 } from './organization'
 
 // Position management
 export {
+  createPositionWithPreparedData,
+  createBeneficiaryCommitment,
+  encodeAmount,
   fetchPosition,
   fetchPositionsByOrganization,
   fetchPositionsByCommitment,

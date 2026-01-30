@@ -6,13 +6,11 @@
 
 import { useState, type FC } from 'react'
 import {
-  Link as LinkIcon,
   Loader2,
   AlertCircle,
   Copy,
   ExternalLink,
   CheckCircle,
-  Sparkles,
 } from 'lucide-react'
 import { Keypair } from '@solana/web3.js'
 import bs58 from 'bs58'

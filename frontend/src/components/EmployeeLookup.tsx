@@ -6,7 +6,7 @@
  */
 
 import { useState, type FC } from 'react'
-import { Search, User, CheckCircle, AlertCircle, Loader2 } from 'lucide-react'
+import { Search, CheckCircle, AlertCircle, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, Button, Input } from '@/components/ui'
 import { useLookupEmployee } from '@/hooks'
 
@@ -92,9 +92,6 @@ export const EmployeeLookup: FC<EmployeeLookupProps> = ({ onSelect }) => {
           <div className="p-4 rounded-xl bg-kage-subtle">
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-kage-accent-glow flex items-center justify-center">
-                  <User className="w-5 h-5 text-kage-accent" />
-                </div>
                 <div>
                   <p className="font-medium text-kage-text">
                     {employee.label || employee.slug}
@@ -105,22 +102,6 @@ export const EmployeeLookup: FC<EmployeeLookupProps> = ({ onSelect }) => {
                 </div>
               </div>
               <CheckCircle className="w-5 h-5 text-green-400" />
-            </div>
-
-            {/* Meta address preview */}
-            <div className="mt-4 space-y-2">
-              <div>
-                <p className="text-xs text-kage-text-muted">Spend Key</p>
-                <p className="text-xs font-mono text-kage-text-dim truncate">
-                  {employee.metaAddress.metaSpendPub}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-kage-text-muted">View Key</p>
-                <p className="text-xs font-mono text-kage-text-dim truncate">
-                  {employee.metaAddress.metaViewPub}
-                </p>
-              </div>
             </div>
 
             {/* Select button */}

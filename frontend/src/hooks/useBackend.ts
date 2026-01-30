@@ -7,7 +7,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Keypair } from '@solana/web3.js'
 import bs58 from 'bs58'
-import { api, type ApiLink, type ApiMetaAddress, type ApiRoleInfo } from '@/lib/api'
+import { api, type ApiLink, type ApiMetaAddress } from '@/lib/api'
 import { useAuth } from '@/contexts/AuthContext'
 
 // =============================================================================
@@ -107,7 +107,7 @@ export interface UseStealthKeysResult {
 }
 
 export function useStealthKeys(): UseStealthKeysResult {
-  const { user, isAuthenticated, refreshUser } = useAuth()
+  const { user, refreshUser } = useAuth()
   const [hasKeys, setHasKeys] = useState(false)
   const [metaSpendPub, setMetaSpendPub] = useState<string | null>(null)
   const [metaViewPub, setMetaViewPub] = useState<string | null>(null)

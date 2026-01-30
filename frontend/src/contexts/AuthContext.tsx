@@ -16,7 +16,7 @@ import {
 } from 'react'
 import { useWallet } from '@solana/wallet-adapter-react'
 import bs58 from 'bs58'
-import { api, type ApiUser, type ApiRoleInfo, type ApiError } from '@/lib/api'
+import { api, type ApiUser, type ApiRoleInfo } from '@/lib/api'
 
 // =============================================================================
 // Types

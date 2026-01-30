@@ -9,8 +9,8 @@ interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
 
 const variants: Record<BadgeVariant, string> = {
   default: 'bg-kage-subtle text-kage-text-muted',
-  success: 'bg-kage-success/20 text-kage-success',
-  warning: 'bg-kage-warning/20 text-kage-warning',
+  success: 'bg-kage-secondary/20 text-kage-secondary',
+  warning: 'bg-kage-text-muted/20 text-kage-text',
   error: 'bg-kage-error/20 text-kage-error',
   accent: 'bg-kage-accent-glow text-kage-accent',
 }
@@ -22,7 +22,7 @@ export const Badge = forwardRef<HTMLSpanElement, BadgeProps>(
         ref={ref}
         className={`
           inline-flex items-center px-2 py-0.5
-          text-xs font-medium rounded
+          text-md font-medium rounded-full
           ${variants[variant]}
           ${className}
         `}

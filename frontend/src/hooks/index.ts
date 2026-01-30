@@ -7,7 +7,7 @@
 // On-chain hooks
 export { useProgram, useProvider } from './useProgram'
 export { useOrganization, useAllOrganizations } from './useOrganization'
-export { usePositions, usePosition, usePositionAggregates } from './usePositions'
+export { usePositions, usePosition, usePositionAggregates, useEmployeePositions } from './usePositions'
 
 // Backend hooks
 export {

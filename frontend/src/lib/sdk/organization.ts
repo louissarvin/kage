@@ -51,6 +51,13 @@ export interface CreateOrganizationParams {
   treasury?: PublicKey // Optional - will generate random if not provided
 }
 
+export interface CreateOrganizationWithVaultParams {
+  name: string
+  tokenMint: PublicKey
+  treasury?: PublicKey
+  initialDeposit?: BN // Optional initial deposit amount
+}
+
 /**
  * Create a new organization
  */
@@ -80,6 +87,79 @@ export async function createOrganization(
 }
 
 /**
+ * Create organization with vault initialization and optional deposit in one flow
+ * This provides better UX by combining multiple steps into fewer transactions
+ */
+export async function createOrganizationWithVault(
+  program: ShadowVestProgram,
+  params: CreateOrganizationWithVaultParams
+): Promise<{
+  signature: string
+  organization: PublicKey
+  vault: PublicKey
+  depositSignature?: string
+}> {
+  const admin = program.provider.publicKey!
+  const [organization] = findOrganizationPda(admin)
+  const [vaultAuthority] = findVaultAuthorityPda(organization)
+  const [vault] = findVaultPda(organization)
+
+  // Hash the name to 32-byte array
+  const nameHash = await hashName(params.name)
+
+  // Use provided treasury or generate a random one
+  const treasury = params.treasury || Keypair.generate().publicKey
+
+  // Step 1: Create organization + Initialize vault in one transaction
+  // We use postInstructions to add initializeVault after createOrganization
+  const initVaultIx = await program.methods
+    .initializeVault()
+    .accounts({
+      admin,
+      organization,
+      vaultAuthority,
+      vault,
+      tokenMint: params.tokenMint,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
+    })
+    .instruction()
+
+  const signature = await program.methods
+    .createOrganization(nameHash, treasury, params.tokenMint)
+    .accounts({
+      admin,
+      organization,
+      systemProgram: SystemProgram.programId,
+    })
+    .postInstructions([initVaultIx])
+    .rpc()
+
+  // Step 2: Deposit tokens if amount provided (separate tx since we need user's ATA)
+  let depositSignature: string | undefined
+  if (params.initialDeposit && params.initialDeposit.gtn(0)) {
+    const adminTokenAccount = await getAssociatedTokenAddress(
+      params.tokenMint,
+      admin
+    )
+
+    depositSignature = await program.methods
+      .depositToVault(params.initialDeposit)
+      .accounts({
+        admin,
+        organization,
+        adminTokenAccount,
+        vault,
+        vaultAuthority,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .rpc()
+  }
+
+  return { signature, organization, vault, depositSignature }
+}
+
+/**
  * Fetch organization account data
  */
 export async function fetchOrganization(
@@ -90,7 +170,8 @@ export async function fetchOrganization(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const account = await (program.account as any).organization.fetch(organization)
     return account as Organization
-  } catch {
+  } catch (err) {
+    console.warn('Failed to fetch organization:', organization.toBase58(), err)
     return null
   }
 }

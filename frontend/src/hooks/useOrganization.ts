@@ -16,9 +16,11 @@ import {
   fetchSchedulesByOrganization,
   getOrganizationStats,
   createOrganization as createOrg,
+  createOrganizationWithVault as createOrgWithVault,
   initializeVault as initVault,
   depositToVault as deposit,
   createVestingSchedule as createSchedule,
+  createPositionWithPreparedData,
   BN,
   getNameHashHex,
 } from '@/lib/sdk'
@@ -27,6 +29,7 @@ import type {
   VestingSchedule,
   OrganizationStats,
   CreateOrganizationParams,
+  CreateOrganizationWithVaultParams,
   CreateScheduleParams,
 } from '@/lib/sdk'
 
@@ -44,9 +47,18 @@ export interface UseOrganizationResult {
   // Actions
   refresh: () => Promise<void>
   createOrganization: (params: CreateOrganizationParams) => Promise<string>
+  createOrganizationWithVault: (params: CreateOrganizationWithVaultParams) => Promise<{
+    signature: string
+    depositSignature?: string
+  }>
   initializeVault: () => Promise<string>
   depositToVault: (amount: BN) => Promise<string>
   createSchedule: (params: CreateScheduleParams) => Promise<{ signature: string; scheduleId: number }>
+  createPositionForEmployee: (
+    scheduleId: number,
+    employeeSlug: string,
+    amount: BN
+  ) => Promise<{ signature: string; positionId: number }>
 }
 
 /**
@@ -78,7 +90,9 @@ export function useOrganization(): UseOrganizationResult {
 
     try {
       // Fetch organization by admin
+      console.log('Fetching organization for admin:', publicKey.toBase58())
       const result = await fetchOrganizationByAdmin(program, publicKey)
+      console.log('Organization fetch result:', result)
 
       if (result) {
         setOrganization(result.organization)
@@ -141,6 +155,42 @@ export function useOrganization(): UseOrganizationResult {
     [program, publicKey, refresh]
   )
 
+  // Create organization with vault (combined flow - better UX)
+  const createOrganizationWithVault = useCallback(
+    async (params: CreateOrganizationWithVaultParams): Promise<{
+      signature: string
+      depositSignature?: string
+    }> => {
+      if (!program || !publicKey) throw new Error('Wallet not connected')
+
+      // Create on-chain with vault
+      const result = await createOrgWithVault(program, params)
+
+      // Link to backend (if authenticated)
+      if (api.isAuthenticated()) {
+        try {
+          const nameHash = await getNameHashHex(params.name)
+          await api.linkOrganization(
+            result.organization.toBase58(),
+            publicKey.toBase58(),
+            nameHash,
+            params.tokenMint.toBase58(),
+            result.organization.toBase58()
+          )
+        } catch (err) {
+          console.warn('Failed to link organization to backend:', err)
+        }
+      }
+
+      await refresh()
+      return {
+        signature: result.signature,
+        depositSignature: result.depositSignature,
+      }
+    },
+    [program, publicKey, refresh]
+  )
+
   // Initialize vault
   const initializeVault = useCallback(async (): Promise<string> => {
     if (!program || !organization) throw new Error('Organization not found')
@@ -174,6 +224,35 @@ export function useOrganization(): UseOrganizationResult {
     [program, organization, refresh]
   )
 
+  // Create position for employee (uses backend relay for Arcium MPC encryption)
+  const createPositionForEmployee = useCallback(
+    async (
+      scheduleId: number,
+      employeeSlug: string,
+      amount: BN
+    ): Promise<{ signature: string; positionId: number }> => {
+      if (!program || !organization) throw new Error('Organization not found')
+
+      // Step 1: Call backend to prepare encrypted data
+      const preparedData = await api.preparePositionOnChain({
+        organizationPubkey: organization.toBase58(),
+        scheduleIndex: scheduleId,
+        employeeSlug,
+        amount: amount.toString(),
+      })
+
+      // Step 2: Build and submit transaction using prepared encrypted data
+      const result = await createPositionWithPreparedData(
+        program,
+        organization,
+        preparedData
+      )
+      await refresh()
+      return result
+    },
+    [program, organization, refresh]
+  )
+
   return {
     organization,
     organizationData,
@@ -183,9 +262,11 @@ export function useOrganization(): UseOrganizationResult {
     error,
     refresh,
     createOrganization,
+    createOrganizationWithVault,
     initializeVault,
     depositToVault,
     createSchedule: createScheduleHandler,
+    createPositionForEmployee,
   }
 }
 

@@ -82,6 +82,99 @@ export interface ApiOrganization {
   positionCount: number
 }
 
+export interface ApiSchedule {
+  id: string
+  pubkey: string
+  scheduleIndex: number
+  cliffDuration: string
+  totalDuration: string
+  vestingInterval: string
+}
+
+export interface ApiPosition {
+  id: string
+  pubkey: string
+  scheduleIndex: number
+  employee: {
+    slug: string
+    label: string | null
+  } | null
+  startTimestamp: string
+  isActive: boolean
+}
+
+export interface PreparePositionOnChainResponse {
+  positionId: number
+  positionPda: string
+  schedulePda: string
+  signPda: string
+  beneficiaryCommitment: number[]
+  encryptedAmount: number[]
+  clientPubkey: number[]
+  nonce: string
+  computationOffset: string
+  arciumAccounts: {
+    mxeAccount: string
+    mempoolAccount: string
+    executingPool: string
+    computationAccount: string
+    compDefAccount: string
+    clusterAccount: string
+    poolAccount: string
+    clockAccount: string
+    arciumProgram: string
+  }
+  programId: string
+}
+
+export interface VestingProgressInfo {
+  positionId: number
+  startTimestamp: number
+  cliffEndTime: number
+  vestingEndTime: number
+  currentTime: number
+  vestingProgress: number
+  vestingNumerator: number
+  isInCliff: boolean
+  isFullyVested: boolean
+  status: 'cliff' | 'vesting' | 'vested'
+  timeUntilCliff: number
+  timeUntilFullyVested: number
+  startDate: string
+  cliffEndDate: string
+  vestingEndDate: string
+}
+
+export interface PrepareClaimResponse {
+  positionPda: string
+  schedulePda: string
+  claimAuthorizationPda: string
+  nullifierPda: string
+  signPda: string
+  vaultPda: string
+  vaultAuthorityPda: string
+  vestingProgress: VestingProgressInfo
+  encryptedTotalAmount: number[]
+  encryptedClaimedAmount: number[]
+  encryptedVestingNumerator: number[]
+  encryptedClaimAmount: number[]
+  clientPubkey: number[]
+  nonce: string
+  computationOffset: string
+  arciumAccounts: {
+    mxeAccount: string
+    mempoolAccount: string
+    executingPool: string
+    computationAccount: string
+    compDefAccount: string
+    clusterAccount: string
+    poolAccount: string
+    clockAccount: string
+    arciumProgram: string
+  }
+  programId: string
+}
+
 // =============================================================================
 // API Client Class
 // =============================================================================
@@ -125,9 +218,9 @@ class ApiClient {
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
-    const headers: HeadersInit = {
+    const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      ...options.headers,
+      ...(options.headers as Record<string, string> || {}),
     }
 
     if (this.token) {
@@ -375,6 +468,134 @@ class ApiClient {
       body: JSON.stringify({ slug }),
     })
     return data.employee
+  }
+
+  // ---------------------------------------------------------------------------
+  // Schedule Endpoints (MVP - database only)
+  // ---------------------------------------------------------------------------
+
+  async createSchedule(params: {
+    organizationPubkey: string
+    scheduleIndex: number
+    cliffDuration: number
+    totalDuration: number
+    vestingInterval: number
+  }): Promise<ApiSchedule> {
+    const data = await this.request<{
+      success: boolean
+      schedule: ApiSchedule
+    }>('/api/organizations/schedules/create', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    })
+    return data.schedule
+  }
+
+  async getSchedules(organizationPubkey: string): Promise<ApiSchedule[]> {
+    const data = await this.request<{
+      success: boolean
+      schedules: ApiSchedule[]
+    }>(`/api/organizations/${organizationPubkey}/schedules`)
+    return data.schedules
+  }
+
+  // ---------------------------------------------------------------------------
+  // Position Endpoints (MVP - database only)
+  // ---------------------------------------------------------------------------
+
+  async createPosition(params: {
+    organizationPubkey: string
+    scheduleId: string
+    employeeSlug: string
+    amount: string
+    tokenSymbol?: string
+  }): Promise<{
+    id: string
+    pubkey: string
+    scheduleId: string
+    employeeSlug: string
+    amount: string
+    tokenSymbol?: string
+    startTimestamp: string
+  }> {
+    const data = await this.request<{
+      success: boolean
+      position: {
+        id: string
+        pubkey: string
+        scheduleId: string
+        employeeSlug: string
+        amount: string
+        tokenSymbol?: string
+        startTimestamp: string
+      }
+    }>('/api/organizations/positions/create', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    })
+    return data.position
+  }
+
+  async getPositions(organizationPubkey: string): Promise<ApiPosition[]> {
+    const data = await this.request<{
+      success: boolean
+      positions: ApiPosition[]
+    }>(`/api/organizations/${organizationPubkey}/positions`)
+    return data.positions
+  }
+
+  // ---------------------------------------------------------------------------
+  // On-Chain Position Creation (Arcium MPC via Backend Relay)
+  // ---------------------------------------------------------------------------
+
+  async preparePositionOnChain(params: {
+    organizationPubkey: string
+    scheduleIndex: number
+    employeeSlug: string
+    amount: string
+  }): Promise<PreparePositionOnChainResponse> {
+    const data = await this.request<{
+      success: boolean
+      data: PreparePositionOnChainResponse
+    }>('/api/organizations/positions/prepare-onchain', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    })
+    return data.data
+  }
+
+  // ---------------------------------------------------------------------------
+  // Vesting Progress & Claims
+  // ---------------------------------------------------------------------------
+
+  async getVestingProgress(params: {
+    organizationPubkey: string
+    positionId: number
+  }): Promise<VestingProgressInfo> {
+    const data = await this.request<{
+      success: boolean
+      progress: VestingProgressInfo
+    }>('/api/organizations/vesting-progress', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    })
+    return data.progress
+  }
+
+  async prepareClaim(params: {
+    organizationPubkey: string
+    positionId: number
+    claimAmount: string
+    nullifier: string // Hex-encoded 32 bytes
+  }): Promise<PrepareClaimResponse> {
+    const data = await this.request<{
+      success: boolean
+      data: PrepareClaimResponse
+    }>('/api/organizations/claims/prepare', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    })
+    return data.data
   }
 }
 

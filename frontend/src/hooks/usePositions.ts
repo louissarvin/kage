@@ -10,8 +10,10 @@ import { PublicKey } from '@solana/web3.js'
 import { useProgram } from './useProgram'
 import {
   fetchPositionsByOrganization,
+  fetchPositionsByCommitment,
   fetchPosition,
   getPositionStats,
+  createBeneficiaryCommitment,
   BN,
 } from '@/lib/sdk'
 import type {
@@ -168,4 +170,70 @@ export function usePositionAggregates(positions: PositionWithStats[]) {
       totalClaimable: new BN(0),
     }
   }, [positions])
+}
+
+/**
+ * Hook to fetch positions for an employee by their stealth keys
+ * Uses the beneficiary commitment derived from meta-address
+ */
+export function useEmployeePositions(
+  metaSpendPub: string | null,
+  metaViewPub: string | null
+): UsePositionsResult {
+  const program = useProgram()
+
+  const [positions, setPositions] = useState<PositionWithStats[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const refresh = useCallback(async () => {
+    if (!program || !metaSpendPub || !metaViewPub) {
+      setPositions([])
+      return
+    }
+
+    setLoading(true)
+    setError(null)
+
+    try {
+      // Create beneficiary commitment from stealth keys
+      const commitment = await createBeneficiaryCommitment(metaSpendPub, metaViewPub)
+
+      // Fetch positions matching this commitment
+      const positionsResult = await fetchPositionsByCommitment(program, commitment)
+      const currentTime = Math.floor(Date.now() / 1000)
+
+      // Fetch stats for each position
+      const positionsWithStats: PositionWithStats[] = await Promise.all(
+        positionsResult.map(async (pos) => ({
+          publicKey: pos.publicKey,
+          account: pos.account,
+          stats: await getPositionStats(program, pos.account, currentTime),
+        }))
+      )
+
+      // Sort by start timestamp descending (newest first)
+      positionsWithStats.sort((a, b) =>
+        b.account.startTimestamp.toNumber() - a.account.startTimestamp.toNumber()
+      )
+
+      setPositions(positionsWithStats)
+    } catch (err) {
+      console.error('Failed to fetch employee positions:', err)
+      setError(err instanceof Error ? err.message : 'Failed to fetch positions')
+    } finally {
+      setLoading(false)
+    }
+  }, [program, metaSpendPub, metaViewPub])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  return {
+    positions,
+    loading,
+    error,
+    refresh,
+  }
 }

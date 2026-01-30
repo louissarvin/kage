@@ -249,9 +249,6 @@ export const Dashboard: FC = () => {
                   <CardContent>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 rounded-xl bg-kage-accent-glow flex items-center justify-center">
-                          <Building2 className="w-6 h-6 text-kage-accent" />
-                        </div>
                         <div>
                           <h3 className="font-semibold text-kage-text">Your Organization</h3>
                           <p className="text-sm text-kage-text-muted">
