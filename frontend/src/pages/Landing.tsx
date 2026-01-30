@@ -472,7 +472,7 @@ export const Landing: FC = () => {
           <div ref={carouselRef} className="overflow-x-auto scrollbar-hide scroll-smooth" style={{ transformStyle: 'preserve-3d' }}>
             <div className="flex gap-5 px-4 pb-8">
               {/* Card 1 - Privacy Payments */}
-              <div ref={el => cardRefs.current[0] = el} className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-[#181818] p-6 flex flex-col flex-shrink-0">
+              <div ref={el => { cardRefs.current[0] = el }} className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-[#181818] p-6 flex flex-col flex-shrink-0">
               <h3 className="text-kage-muted text-2xl font-semibold leading-tight">
                 Confidential payments. Complete privacy.
               </h3>
@@ -496,7 +496,7 @@ export const Landing: FC = () => {
             </div>
 
               {/* Card 2 - ZK Proofs */}
-              <div ref={el => cardRefs.current[1] = el} className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-[#5CB8E4]/70 p-6 flex flex-col flex-shrink-0">
+              <div ref={el => { cardRefs.current[1] = el }} className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-[#5CB8E4]/70 p-6 flex flex-col flex-shrink-0">
               <h3 className="text-white text-2xl font-semibold leading-tight">
                 Zero-knowledge proofs for every transaction.
               </h3>
@@ -536,7 +536,7 @@ export const Landing: FC = () => {
             </div>
 
               {/* Card 3 - Vesting Schedules */}
-              <div ref={el => cardRefs.current[2] = el} className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-kage-accent/70 p-6 flex flex-col flex-shrink-0">
+              <div ref={el => { cardRefs.current[2] = el }} className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-kage-accent/70 p-6 flex flex-col flex-shrink-0">
               <h3 className="text-white text-2xl font-semibold leading-tight">
                 Private vesting schedules for your team.
               </h3>
@@ -559,7 +559,7 @@ export const Landing: FC = () => {
             </div>
 
               {/* Card 4 - Transaction History */}
-              <div ref={el => cardRefs.current[3] = el} className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-kage-text p-6 flex flex-col flex-shrink-0 overflow-hidden">
+              <div ref={el => { cardRefs.current[3] = el }} className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-kage-text p-6 flex flex-col flex-shrink-0 overflow-hidden">
               <h3 className="text-[#1d1d1f] text-2xl font-semibold leading-tight">
                 Monitor activity with encrypted history.
               </h3>
@@ -623,7 +623,7 @@ export const Landing: FC = () => {
             </div>
 
               {/* Card 5 - Light Protocol */}
-              <div ref={el => cardRefs.current[4] = el} className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-kage-secondary-dim p-6 flex flex-col flex-shrink-0">
+              <div ref={el => { cardRefs.current[4] = el }} className="w-[360px] md:w-[400px] h-[480px] md:h-[520px] rounded-3xl bg-kage-secondary-dim p-6 flex flex-col flex-shrink-0">
                 <h3 className="text-white text-2xl font-semibold leading-tight">
                   Built on Solana, Light Protocol, Arcium and Noir.
                 </h3>
