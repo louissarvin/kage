@@ -17,7 +17,7 @@ import { Card, CardContent, Button, Badge } from '@/components/ui'
 import { Layout } from '@/components/layout'
 import { formatAddress, formatTimestamp, formatDuration } from '@/lib/constants'
 import { useAuth } from '@/contexts/AuthContext'
-import { useMyPositions, useVaultKeys } from '@/hooks'
+import { useMyPositions, useVaultKeys, type ClaimStatus } from '@/hooks'
 import { useProgram } from '@/hooks/useProgram'
 import { api, type VestingProgressInfo } from '@/lib/api'
 import {
@@ -49,7 +49,7 @@ const LIGHT_RPC_ENDPOINT = import.meta.env.VITE_HELIUS_RPC_URL || 'https://devne
 // Types
 // =============================================================================
 
-type VestingStatus = 'cliff' | 'active' | 'vested' | 'completed'
+type VestingStatus = 'cliff' | 'active' | 'vested' | 'completed' | 'claimed'
 
 /**
  * Position display data combining database info and derived status
@@ -73,6 +73,8 @@ interface PositionDisplayData {
   vestingProgress: number
   isFullyVested: boolean
   isActive: boolean
+  // Claim status
+  claimStatus: ClaimStatus
   // Derived
   status: VestingStatus
   organization: PublicKey
@@ -94,11 +96,17 @@ interface PositionDisplayData {
 
 /**
  * Convert status string from API to VestingStatus
+ * Also considers claimStatus for already-claimed positions
  */
 function convertStatus(
   apiStatus: 'cliff' | 'vesting' | 'vested',
-  isActive: boolean
+  isActive: boolean,
+  claimStatus?: ClaimStatus
 ): VestingStatus {
+  // If position is claimed, show claimed status
+  if (claimStatus === 'claimed') {
+    return 'claimed'
+  }
   if (!isActive) {
     return 'completed'
   }
@@ -118,6 +126,8 @@ function getStatusBadgeProps(status: VestingStatus): {
       return { variant: 'success', label: 'Active' }
     case 'vested':
       return { variant: 'accent', label: 'Fully Vested' }
+    case 'claimed':
+      return { variant: 'default', label: 'Claimed' }
     case 'completed':
       return { variant: 'default', label: 'Completed' }
   }
@@ -129,7 +139,7 @@ function getStatusBadgeProps(status: VestingStatus): {
 
 export const Positions: FC = () => {
   const containerRef = useRef<HTMLDivElement>(null)
-  const [filter, setFilter] = useState<'all' | 'active' | 'cliff' | 'vested'>('all')
+  const [filter, setFilter] = useState<'all' | 'active' | 'cliff' | 'vested' | 'claimed'>('all')
   const [selectedPosition, setSelectedPosition] = useState<PositionDisplayData | null>(null)
   const [showClaimModal, setShowClaimModal] = useState(false)
 
@@ -182,8 +192,10 @@ export const Positions: FC = () => {
       vestingProgress: pos.vestingProgress,
       isFullyVested: pos.isFullyVested,
       isActive: pos.isActive,
-      // Derived
-      status: convertStatus(pos.status, pos.isActive),
+      // Claim status from on-chain data
+      claimStatus: pos.claimStatus,
+      // Derived - pass claimStatus to determine if position is claimed
+      status: convertStatus(pos.status, pos.isActive, pos.claimStatus),
       organization: new PublicKey(pos.organizationPubkey),
       publicKey: new PublicKey(pos.pubkey),
       // On-chain data from Light Protocol
@@ -208,6 +220,7 @@ export const Positions: FC = () => {
       if (filter === 'active') return pos.status === 'active'
       if (filter === 'cliff') return pos.status === 'cliff'
       if (filter === 'vested') return pos.status === 'vested' || pos.status === 'completed'
+      if (filter === 'claimed') return pos.status === 'claimed'
       return true
     })
   }, [displayPositions, filter])
@@ -363,7 +376,7 @@ export const Positions: FC = () => {
 
         {/* Stats Summary */}
         {displayPositions.length > 0 && (
-          <div className="pos-section grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="pos-section grid grid-cols-2 md:grid-cols-5 gap-4">
             <div className="p-4 rounded-xl bg-kage-elevated border border-kage-border-subtle">
               <p className="text-xs text-kage-text-muted mb-1">Total Positions</p>
               <p className="text-2xl font-semibold text-kage-text">{displayPositions.length}</p>
@@ -386,12 +399,18 @@ export const Positions: FC = () => {
                 {displayPositions.filter(p => p.status === 'vested' || p.status === 'completed').length}
               </p>
             </div>
+            <div className="p-4 rounded-xl bg-kage-elevated border border-kage-border-subtle">
+              <p className="text-xs text-kage-text-muted mb-1">Claimed</p>
+              <p className="text-2xl font-semibold text-white">
+                {displayPositions.filter(p => p.status === 'claimed').length}
+              </p>
+            </div>
           </div>
         )}
 
         {/* Filters */}
-        <div className="pos-section flex gap-2">
-          {(['all', 'active', 'cliff', 'vested'] as const).map((f) => (
+        <div className="pos-section flex gap-2 flex-wrap">
+          {(['all', 'active', 'cliff', 'vested', 'claimed'] as const).map((f) => (
             <button
               key={f}
               onClick={() => setFilter(f)}
@@ -404,7 +423,7 @@ export const Positions: FC = () => {
                 }
               `}
             >
-              {f === 'vested' ? 'Vested' : f.charAt(0).toUpperCase() + f.slice(1)}
+              {f === 'vested' ? 'Vested' : f === 'claimed' ? 'Claimed' : f.charAt(0).toUpperCase() + f.slice(1)}
             </button>
           ))}
         </div>
@@ -520,11 +539,13 @@ const PositionCard: FC<PositionCardProps> = ({ position, currentTime, onClaimCli
           <div className="h-2 bg-kage-subtle rounded-full overflow-hidden">
             <div
               className={`h-full rounded-full transition-all duration-500 ${
-                position.status === 'cliff'
-                  ? 'bg-yellow-500'
-                  : position.status === 'vested' || position.status === 'completed'
-                    ? 'bg-kage-accent'
-                    : 'bg-green-500'
+                position.status === 'claimed'
+                  ? 'bg-gray-500'
+                  : position.status === 'cliff'
+                    ? 'bg-yellow-500'
+                    : position.status === 'vested' || position.status === 'completed'
+                      ? 'bg-kage-accent'
+                      : 'bg-green-500'
               }`}
               style={{ width: `${position.vestingProgress}%` }}
             />
@@ -585,14 +606,24 @@ const PositionCard: FC<PositionCardProps> = ({ position, currentTime, onClaimCli
 
         {/* Actions */}
         <div className="flex gap-3 pt-2">
-          <Button
-            variant="primary"
-            className="flex-1"
-            disabled={position.status === 'cliff'}
-            onClick={() => onClaimClick(position)}
-          >
-            {position.status === 'cliff' ? 'In Cliff Period' : 'Claim Tokens'}
-          </Button>
+          {position.status === 'claimed' ? (
+            <Button
+              variant="secondary"
+              className="flex-1"
+              disabled
+            >
+              Already Claimed
+            </Button>
+          ) : (
+            <Button
+              variant="primary"
+              className="flex-1"
+              disabled={position.status === 'cliff'}
+              onClick={() => onClaimClick(position)}
+            >
+              {position.status === 'cliff' ? 'In Cliff Period' : 'Claim Tokens'}
+            </Button>
+          )}
         </div>
       </CardContent>
     </Card>

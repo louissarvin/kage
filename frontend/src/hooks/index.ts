@@ -34,6 +34,7 @@ export type {
   UseMyPositionsResult,
   MyPositionWithStats,
   OnChainPositionData,
+  ClaimStatus,
 } from './usePositions'
 export type {
   UseLinksResult,

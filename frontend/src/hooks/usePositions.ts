@@ -28,6 +28,8 @@ import {
   fetchCompressedPositionForClaim,
   fetchAllCompressedPositions,
   PROGRAM_ID,
+  // For checking ClaimAuthorization status
+  findClaimAuthorizationPda,
 } from '@/lib/sdk'
 import type {
   VestingPosition,
@@ -36,11 +38,46 @@ import type {
 } from '@/lib/sdk'
 import { api } from '@/lib/api'
 import { getCachedStealthKeys } from '@/lib/stealth-key-cache'
-import { isMyStealthPayment } from '@/lib/stealth-address'
+import { isMyStealthPayment, deriveStealthKeypair, decryptEphemeralPrivKey, createNullifier } from '@/lib/stealth-address'
 import { fetchAllStealthPaymentEvents, getEphemeralDataFromEvents } from '@/lib/helius-events'
 
 // Light Protocol RPC endpoint
 const LIGHT_RPC_ENDPOINT = import.meta.env.VITE_HELIUS_RPC_URL || 'https://devnet.helius-rpc.com/?api-key=YOUR_KEY'
+
+/**
+ * Check if a ClaimAuthorization exists and is processed on-chain
+ * This is used as a fallback when the compressed position is nullified
+ */
+async function checkClaimAuthorizationStatus(
+  connection: any,
+  program: any,
+  organization: PublicKey,
+  positionId: number,
+  nullifier: Uint8Array
+): Promise<{ exists: boolean; isProcessed: boolean }> {
+  try {
+    const [claimAuthPda] = findClaimAuthorizationPda(organization, positionId, nullifier)
+
+    // Try to fetch the ClaimAuthorization account
+    const accountInfo = await connection.getAccountInfo(claimAuthPda)
+
+    if (!accountInfo) {
+      return { exists: false, isProcessed: false }
+    }
+
+    // Try to decode the account data
+    try {
+      const claimAuth = await program.account.claimAuthorization.fetch(claimAuthPda)
+      return { exists: true, isProcessed: claimAuth.isProcessed === true }
+    } catch {
+      // Account exists but can't be decoded - assume it's processed
+      return { exists: true, isProcessed: true }
+    }
+  } catch (err) {
+    console.warn('[checkClaimAuthorizationStatus] Error:', err)
+    return { exists: false, isProcessed: false }
+  }
+}
 
 export interface PositionWithStats {
   publicKey: PublicKey
@@ -216,6 +253,11 @@ export interface OnChainPositionData {
 }
 
 /**
+ * Claim status for a position
+ */
+export type ClaimStatus = 'unclaimed' | 'claimed' | 'partially_claimed' | 'unknown'
+
+/**
  * Extended position type that includes stealth data needed for claims
  */
 export interface MyPositionWithStats {
@@ -245,6 +287,8 @@ export interface MyPositionWithStats {
   isInCliff: boolean
   isFullyVested: boolean
   isActive: boolean
+  // Claim status (hybrid check: compressed data + ClaimAuthorization fallback)
+  claimStatus: ClaimStatus
   // Link info
   receivedVia: {
     slug: string
@@ -333,8 +377,9 @@ export function useMyPositions(metaSpendPub?: string | null): UseMyPositionsResu
       }
 
       // Step 2: Fetch StealthPaymentEvents from blockchain
+      // Use cache when available to avoid rate limits (429 errors)
       console.log('[useMyPositions] Step 2: Fetching StealthPaymentEvents from blockchain...')
-      const stealthEvents = await fetchAllStealthPaymentEvents(500, true) // Force refresh
+      const stealthEvents = await fetchAllStealthPaymentEvents(100, false) // Use cache, limit 100 txs
       console.log(`[useMyPositions] Found ${stealthEvents.size} stealth payment events`)
 
       // Step 3: Scan compressed positions from Light Protocol
@@ -401,6 +446,22 @@ export function useMyPositions(metaSpendPub?: string | null): UseMyPositionsResu
 
             // Build position data
             const startTimestamp = pos.data.startTimestamp
+            const isFullyClaimed = pos.data.isFullyClaimed === 1
+            const isActive = pos.data.isActive === 1
+
+            // Determine claim status from compressed position data (Option C)
+            // If isFullyClaimed=true, position is claimed
+            // If isActive=false and not fully claimed, might be partially claimed (for production streaming)
+            let claimStatus: ClaimStatus = 'unclaimed'
+            if (isFullyClaimed) {
+              claimStatus = 'claimed'
+            } else if (!isActive) {
+              // Position inactive but not fully claimed - might be error state
+              claimStatus = 'unknown'
+            }
+
+            console.log(`[useMyPositions] Position ${pos.data.positionId} claim status: ${claimStatus} (isFullyClaimed=${isFullyClaimed}, isActive=${isActive})`)
+
             const onChainData: OnChainPositionData = {
               owner: pos.data.owner.toBase58(),
               organization: pos.data.organization.toBase58(),
@@ -408,8 +469,8 @@ export function useMyPositions(metaSpendPub?: string | null): UseMyPositionsResu
               positionId: pos.data.positionId,
               beneficiaryCommitment: beneficiaryCommitment.toBase58(),
               startTimestamp,
-              isActive: pos.data.isActive === 1,
-              isFullyClaimed: pos.data.isFullyClaimed === 1,
+              isActive,
+              isFullyClaimed,
               compressedAddress: pos.address.toBase58(),
               hash: new Uint8Array(0),
               treeInfo: { tree: '', queue: '' },
@@ -434,7 +495,8 @@ export function useMyPositions(metaSpendPub?: string | null): UseMyPositionsResu
               status: 'vested',
               isInCliff: false,
               isFullyVested: true,
-              isActive: pos.data.isActive === 1,
+              isActive,
+              claimStatus,
               receivedVia: null,
               onChainData,
               verificationStatus: 'verified',

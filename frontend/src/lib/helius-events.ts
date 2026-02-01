@@ -19,14 +19,49 @@ const STEALTH_PAYMENT_EVENT_DISCRIMINATOR = new Uint8Array([145, 241, 54, 6, 137
 
 const HELIUS_RPC_URL = import.meta.env.VITE_HELIUS_RPC_URL || 'https://devnet.helius-rpc.com'
 
-// Rate limiting
-const DELAY_BETWEEN_REQUESTS = 100 // ms
+// Rate limiting - Helius free tier has strict limits
+const DELAY_BETWEEN_REQUESTS = 250 // ms - increased for rate limiting
+const DELAY_AFTER_ERROR = 2000 // ms - longer delay after rate limit error
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
-// Cache for stealth events (in-memory, persists during session)
+// Cache for stealth events (in-memory + localStorage)
 let cachedEventsMap: StealthPaymentEventsMap | null = null
 let cacheTimestamp = 0
-const CACHE_TTL = 5 * 60 * 1000 // 5 minutes
+const CACHE_TTL = 10 * 60 * 1000 // 10 minutes (increased from 5)
+const LOCALSTORAGE_KEY = 'shadowvest_stealth_events_cache'
+
+// Try to load from localStorage on module init
+function loadCacheFromStorage(): void {
+  try {
+    const stored = localStorage.getItem(LOCALSTORAGE_KEY)
+    if (stored) {
+      const { events, timestamp } = JSON.parse(stored)
+      if (Date.now() - timestamp < CACHE_TTL) {
+        cachedEventsMap = new Map(events)
+        cacheTimestamp = timestamp
+        console.log(`[helius-events] Loaded ${cachedEventsMap.size} events from localStorage cache`)
+      }
+    }
+  } catch {
+    // Ignore localStorage errors
+  }
+}
+
+function saveCacheToStorage(): void {
+  if (!cachedEventsMap) return
+  try {
+    const data = {
+      events: Array.from(cachedEventsMap.entries()),
+      timestamp: cacheTimestamp,
+    }
+    localStorage.setItem(LOCALSTORAGE_KEY, JSON.stringify(data))
+  } catch {
+    // Ignore localStorage errors (quota exceeded, etc.)
+  }
+}
+
+// Load cache on module init
+loadCacheFromStorage()
 
 /**
  * Parsed StealthPaymentEvent data
@@ -214,12 +249,12 @@ export async function fetchStealthPaymentEvents(
  * Fetch StealthPaymentEvents for ALL organizations (full scan)
  * Uses caching to avoid rate limits on repeated calls
  *
- * @param limit - Maximum number of transactions to scan (default 500)
+ * @param limit - Maximum number of transactions to scan (default 100, reduced for rate limits)
  * @param forceRefresh - Force refresh even if cache is valid
  * @returns Map of position key to event data
  */
 export async function fetchAllStealthPaymentEvents(
-  limit = 500,
+  limit = 100, // Reduced from 500 to avoid rate limits
   forceRefresh = false
 ): Promise<StealthPaymentEventsMap> {
   // Check cache first
@@ -270,10 +305,8 @@ export async function fetchAllStealthPaymentEvents(
 
     for (const sigInfo of signatures) {
       try {
-        // Rate limiting - add delay between requests
-        if (processedCount > 0 && processedCount % 10 === 0) {
-          await sleep(DELAY_BETWEEN_REQUESTS)
-        }
+        // Rate limiting - add delay between EVERY request to avoid 429
+        await sleep(DELAY_BETWEEN_REQUESTS)
 
         const tx = await connection.getTransaction(sigInfo.signature, {
           commitment: 'confirmed',
@@ -319,27 +352,28 @@ export async function fetchAllStealthPaymentEvents(
         errorCount++
         consecutiveErrors++
 
-        // If we're getting rate limited (many consecutive errors), slow down
+        // If we're getting rate limited (many consecutive errors), slow down significantly
         if (consecutiveErrors > 3) {
-          console.warn(`[helius-events] Rate limited, adding delay...`)
-          await sleep(2000)
+          console.warn(`[helius-events] Rate limited, adding ${DELAY_AFTER_ERROR}ms delay...`)
+          await sleep(DELAY_AFTER_ERROR)
         }
 
-        if (consecutiveErrors > 10) {
-          console.warn(`[helius-events] Too many consecutive errors (${consecutiveErrors}), stopping scan`)
+        if (consecutiveErrors > 5) {
+          console.warn(`[helius-events] Too many consecutive errors (${consecutiveErrors}), stopping scan early`)
           break
         }
 
         // Add extra delay after error
-        await sleep(500)
+        await sleep(1000)
       }
     }
 
     console.log(`[helius-events] Scan complete: ${eventsMap.size} events from ${processedCount} txs (${errorCount} errors)`)
 
-    // Update cache
+    // Update cache (both memory and localStorage)
     cachedEventsMap = eventsMap
     cacheTimestamp = now
+    saveCacheToStorage()
 
     return eventsMap
   } catch (err) {
