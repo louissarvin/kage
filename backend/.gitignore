@@ -29,3 +29,6 @@ coverage/
 
 # Prisma
 prisma/migrations/**/migration_lock.toml
+
+*-keypair.json                                                                                                                                                      
+*.keypair
