@@ -124,6 +124,54 @@ export const EmployeeSetup: FC<EmployeeSetupProps> = ({ onComplete }) => {
     }
   }
 
+  // Register stealth keys only (for users who already have links but no keys)
+  const handleRegisterKeysOnly = async () => {
+    if (!wallet || hasStealthKeys) return
+
+    setCreating(true)
+    setError(null)
+
+    try {
+      setSetupStep('generating')
+      console.log('=== EmployeeSetup: Registering Stealth Keys Only ===')
+      console.log('Wallet address:', wallet.address)
+
+      const spendKeypair = Keypair.generate()
+      const viewKeypair = Keypair.generate()
+
+      const metaSpendPub = bs58.encode(spendKeypair.publicKey.toBytes())
+      const metaViewPub = bs58.encode(viewKeypair.publicKey.toBytes())
+
+      const spendPrivKeyHex = Buffer.from(spendKeypair.secretKey.slice(0, 32)).toString('hex')
+      const viewPrivKeyHex = Buffer.from(viewKeypair.secretKey.slice(0, 32)).toString('hex')
+
+      console.log('Generated stealth keys')
+
+      // Register public keys with backend
+      console.log('Registering public keys with backend...')
+      await api.registerStealthKeys(wallet.id, metaSpendPub, metaViewPub)
+      console.log('Public keys registered!')
+
+      // Store private keys in on-chain Arcium MPC vault
+      setSetupStep('storing')
+      console.log('Storing private keys in Arcium vault...')
+      const storeResult = await storeMetaKeys(spendPrivKeyHex, viewPrivKeyHex)
+      console.log('Vault storage result:', storeResult)
+
+      // Refresh user data
+      await refreshUser()
+      setSetupStep('idle')
+
+      console.log('=== Stealth keys registered successfully! ===')
+      onComplete?.()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to register stealth keys')
+      setSetupStep('idle')
+    } finally {
+      setCreating(false)
+    }
+  }
+
   const copyLink = (fullUrl: string, linkId: string) => {
     navigator.clipboard.writeText(fullUrl)
     setCopied(linkId)
@@ -192,6 +240,50 @@ export const EmployeeSetup: FC<EmployeeSetupProps> = ({ onComplete }) => {
                 </div>
               </div>
             ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Register keys only - for users who have links but no stealth keys */}
+      {links.length > 0 && !hasStealthKeys && (
+        <Card className="border-kage-accent/30">
+          <CardHeader>
+            <div className="flex items-center gap-3">
+              <Shield className="w-6 h-6 text-kage-accent" />
+              <div>
+                <h3 className="text-lg font-semibold text-kage-text">
+                  Register Stealth Keys
+                </h3>
+                <p className="text-sm text-kage-text-muted">
+                  Your stealth keys need to be set up to receive private payments
+                </p>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {error && (
+              <div className="p-3 rounded-xl bg-red-500/10 mb-4">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
+                  <p className="text-sm text-red-400">{error}</p>
+                </div>
+              </div>
+            )}
+            <Button
+              variant="primary"
+              onClick={handleRegisterKeysOnly}
+              loading={creating}
+              disabled={creating}
+              className="w-full"
+            >
+              {creating
+                ? (setupStep === 'generating'
+                    ? 'Generating secure keys...'
+                    : setupStep === 'storing'
+                    ? 'Storing keys on-chain (MPC)...'
+                    : 'Processing...')
+                : 'Register Stealth Keys Now'}
+            </Button>
           </CardContent>
         </Card>
       )}

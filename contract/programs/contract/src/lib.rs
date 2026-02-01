@@ -260,7 +260,6 @@ pub mod contract {
             ctx.accounts,
             computation_offset,
             args,
-            None,
             vec![callback_ix],
             1,
             0,
@@ -364,7 +363,6 @@ pub mod contract {
             ctx.accounts,
             computation_offset,
             args,
-            None,
             vec![callback_ix],
             1,
             0,
@@ -467,7 +465,6 @@ pub mod contract {
             ctx.accounts,
             computation_offset,
             args,
-            None,
             vec![CalculateVestedCallback::callback_ix(
                 computation_offset,
                 &ctx.accounts.mxe_account,
@@ -719,7 +716,6 @@ pub mod contract {
             ctx.accounts,
             computation_offset,
             args,
-            None,
             vec![callback_ix],
             1,
             0,
@@ -1403,7 +1399,6 @@ pub mod contract {
             ctx.accounts,
             computation_offset,
             args,
-            None,
             vec![callback_ix],
             1,
             0,
@@ -1735,7 +1730,6 @@ pub mod contract {
             ctx.accounts,
             computation_offset,
             args,
-            None,
             vec![callback_ix],
             1,
             0,
@@ -1815,7 +1809,6 @@ pub mod contract {
             ctx.accounts,
             computation_offset,
             args,
-            None,
             vec![FetchMetaKeysCallback::callback_ix(
                 computation_offset,
                 &ctx.accounts.mxe_account,
@@ -2256,6 +2249,11 @@ pub struct InitInitPositionCompDef<'info> {
     #[account(mut)]
     /// CHECK: comp_def_account
     pub comp_def_account: UncheckedAccount<'info>,
+    #[account(mut)]
+    /// CHECK: address_lookup_table
+    pub address_lookup_table: UncheckedAccount<'info>,
+    /// CHECK: lut_program
+    pub lut_program: UncheckedAccount<'info>,
     pub arcium_program: Program<'info, Arcium>,
     pub system_program: Program<'info, System>,
 }
@@ -2270,6 +2268,11 @@ pub struct InitCalculateVestedCompDef<'info> {
     #[account(mut)]
     /// CHECK: comp_def_account
     pub comp_def_account: UncheckedAccount<'info>,
+    #[account(mut)]
+    /// CHECK: address_lookup_table
+    pub address_lookup_table: UncheckedAccount<'info>,
+    /// CHECK: lut_program
+    pub lut_program: UncheckedAccount<'info>,
     pub arcium_program: Program<'info, Arcium>,
     pub system_program: Program<'info, System>,
 }
@@ -2284,6 +2287,11 @@ pub struct InitProcessClaimCompDef<'info> {
     #[account(mut)]
     /// CHECK: comp_def_account
     pub comp_def_account: UncheckedAccount<'info>,
+    #[account(mut)]
+    /// CHECK: address_lookup_table
+    pub address_lookup_table: UncheckedAccount<'info>,
+    /// CHECK: lut_program
+    pub lut_program: UncheckedAccount<'info>,
     pub arcium_program: Program<'info, Arcium>,
     pub system_program: Program<'info, System>,
 }
@@ -2298,6 +2306,11 @@ pub struct InitProcessClaimV2CompDef<'info> {
     #[account(mut)]
     /// CHECK: comp_def_account
     pub comp_def_account: UncheckedAccount<'info>,
+    #[account(mut)]
+    /// CHECK: address_lookup_table
+    pub address_lookup_table: UncheckedAccount<'info>,
+    /// CHECK: lut_program
+    pub lut_program: UncheckedAccount<'info>,
     pub arcium_program: Program<'info, Arcium>,
     pub system_program: Program<'info, System>,
 }
@@ -2903,6 +2916,11 @@ pub struct InitStoreMetaKeysCompDef<'info> {
     #[account(mut)]
     /// CHECK: comp_def_account
     pub comp_def_account: UncheckedAccount<'info>,
+    #[account(mut)]
+    /// CHECK: address_lookup_table
+    pub address_lookup_table: UncheckedAccount<'info>,
+    /// CHECK: lut_program
+    pub lut_program: UncheckedAccount<'info>,
     pub arcium_program: Program<'info, Arcium>,
     pub system_program: Program<'info, System>,
 }
@@ -2917,6 +2935,11 @@ pub struct InitFetchMetaKeysCompDef<'info> {
     #[account(mut)]
     /// CHECK: comp_def_account
     pub comp_def_account: UncheckedAccount<'info>,
+    #[account(mut)]
+    /// CHECK: address_lookup_table
+    pub address_lookup_table: UncheckedAccount<'info>,
+    /// CHECK: lut_program
+    pub lut_program: UncheckedAccount<'info>,
     pub arcium_program: Program<'info, Arcium>,
     pub system_program: Program<'info, System>,
 }

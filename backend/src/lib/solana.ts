@@ -234,9 +234,9 @@ export async function createPositionOnChain(
   const amountBigInt = BigInt(amount)
   const encrypted = await encryptAmount(prov, amountBigInt)
 
-  // Generate computation offset
+  // Generate computation offset (little-endian, matching the test pattern)
   const computationOffsetBytes = randomBytes(8)
-  const computationOffset = new BN(computationOffsetBytes)
+  const computationOffset = new BN(computationOffsetBytes, 'le')
 
   // Get Arcium cluster account
   const clusterAccount = getClusterAccAddress(ARCIUM_CLUSTER_OFFSET)
@@ -626,9 +626,9 @@ export async function prepareWriteMetaKeysToVault(
   // Generate MXE nonce for re-encryption
   const mxeNonce = randomBytes(16)
 
-  // Generate computation offset
+  // Generate computation offset (little-endian, matching the test pattern)
   const computationOffsetBytes = randomBytes(8)
-  const computationOffset = new BN(computationOffsetBytes)
+  const computationOffset = new BN(computationOffsetBytes, 'le')
 
   // Derive vault PDA
   const [vaultPda] = findMetaKeysVaultPda(owner)
@@ -648,7 +648,8 @@ export async function prepareWriteMetaKeysToVault(
     arciumProgram: getArciumProgramId().toBase58(),
   }
 
-  return {
+  // Debug logging
+  const result = {
     vaultPda: vaultPda.toBase58(),
     signPda: signPda.toBase58(),
     computationOffset: computationOffset.toString(),
@@ -662,6 +663,19 @@ export async function prepareWriteMetaKeysToVault(
     arciumAccounts,
     programId: programId.toBase58(),
   }
+
+  console.log('=== prepareWriteMetaKeysToVault DEBUG ===')
+  console.log('encryptedSpendLo length:', result.encryptedSpendLo.length)
+  console.log('encryptedSpendHi length:', result.encryptedSpendHi.length)
+  console.log('encryptedViewLo length:', result.encryptedViewLo.length)
+  console.log('encryptedViewHi length:', result.encryptedViewHi.length)
+  console.log('clientPubkey length:', result.clientPubkey.length)
+  console.log('userNonce:', result.userNonce)
+  console.log('mxeNonce:', result.mxeNonce)
+  console.log('computationOffset:', result.computationOffset)
+  console.log('=== END DEBUG ===')
+
+  return result
 }
 
 export interface PrepareReadMetaKeysResult {
@@ -701,9 +715,9 @@ export async function prepareReadMetaKeysFromVault(
   const sessionPubKey = x25519.getPublicKey(sessionPrivKey)
   const sessionNonce = randomBytes(16)
 
-  // Generate computation offset
+  // Generate computation offset (little-endian, matching the test pattern)
   const computationOffsetBytes = randomBytes(8)
-  const computationOffset = new BN(computationOffsetBytes)
+  const computationOffset = new BN(computationOffsetBytes, 'le')
 
   // Derive vault PDA
   const [vaultPda] = findMetaKeysVaultPda(owner)
@@ -841,9 +855,9 @@ export async function prepareClaimData(
   const encVestingNumerator = await encryptAmount(prov, BigInt(vestingProgress.vestingNumerator))
   const encClaimAmount = await encryptAmount(prov, claimAmount)
 
-  // Generate computation offset
+  // Generate computation offset (little-endian, matching the test pattern)
   const computationOffsetBytes = randomBytes(8)
-  const computationOffset = new BN(computationOffsetBytes)
+  const computationOffset = new BN(computationOffsetBytes, 'le')
 
   // Build Arcium accounts
   const arciumAccounts = {

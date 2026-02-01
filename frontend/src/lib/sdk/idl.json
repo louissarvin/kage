@@ -1963,6 +1963,13 @@
           "writable": true
         },
         {
+          "name": "address_lookup_table",
+          "writable": true
+        },
+        {
+          "name": "lut_program"
+        },
+        {
           "name": "arcium_program",
           "address": "Arcj82pX7HxYKLR92qvgZUAd7vGS1k4hQvAFcPATFdEQ"
         },
@@ -2003,6 +2010,13 @@
           "writable": true
         },
         {
+          "name": "address_lookup_table",
+          "writable": true
+        },
+        {
+          "name": "lut_program"
+        },
+        {
           "name": "arcium_program",
           "address": "Arcj82pX7HxYKLR92qvgZUAd7vGS1k4hQvAFcPATFdEQ"
         },
@@ -2038,6 +2052,13 @@
         {
           "name": "comp_def_account",
           "writable": true
+        },
+        {
+          "name": "address_lookup_table",
+          "writable": true
+        },
+        {
+          "name": "lut_program"
         },
         {
           "name": "arcium_program",
@@ -2136,6 +2157,13 @@
           "writable": true
         },
         {
+          "name": "address_lookup_table",
+          "writable": true
+        },
+        {
+          "name": "lut_program"
+        },
+        {
           "name": "arcium_program",
           "address": "Arcj82pX7HxYKLR92qvgZUAd7vGS1k4hQvAFcPATFdEQ"
         },
@@ -2171,6 +2199,13 @@
         {
           "name": "comp_def_account",
           "writable": true
+        },
+        {
+          "name": "address_lookup_table",
+          "writable": true
+        },
+        {
+          "name": "lut_program"
         },
         {
           "name": "arcium_program",
@@ -2211,6 +2246,13 @@
         {
           "name": "comp_def_account",
           "writable": true
+        },
+        {
+          "name": "address_lookup_table",
+          "writable": true
+        },
+        {
+          "name": "lut_program"
         },
         {
           "name": "arcium_program",

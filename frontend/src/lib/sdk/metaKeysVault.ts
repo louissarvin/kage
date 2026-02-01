@@ -6,7 +6,7 @@
  */
 
 import { PublicKey, SystemProgram, ComputeBudgetProgram } from '@solana/web3.js'
-import BN from 'bn.js'
+import { BN } from './program' // Use BN from Anchor (consistent with tests)
 import type { ShadowVestProgram } from './program'
 import { api } from '../api'
 
@@ -131,17 +131,21 @@ export async function writeMetaKeysToVault(
   })
 
   // Step 4: Build and submit transaction
+  // Match the exact pattern from the working test:
+  // - BN for computation offset (from decimal string)
+  // - Arrays with explicit typing
+  // - BN for nonces (from decimal string)
   console.log('Submitting write_meta_keys_to_vault transaction...')
   const signature = await program.methods
     .writeMetaKeysToVault(
-      new BN(preparedData.computationOffset),
-      preparedData.encryptedSpendLo,
-      preparedData.encryptedSpendHi,
-      preparedData.encryptedViewLo,
-      preparedData.encryptedViewHi,
-      preparedData.clientPubkey,
-      new BN(preparedData.userNonce),
-      new BN(preparedData.mxeNonce)
+      new BN(preparedData.computationOffset, 10),
+      preparedData.encryptedSpendLo as number[],
+      preparedData.encryptedSpendHi as number[],
+      preparedData.encryptedViewLo as number[],
+      preparedData.encryptedViewHi as number[],
+      preparedData.clientPubkey as number[],
+      new BN(preparedData.userNonce, 10),
+      new BN(preparedData.mxeNonce, 10)
     )
     .accountsPartial(accounts)
     .preInstructions([modifyComputeUnits, addPriorityFee])
@@ -210,9 +214,9 @@ export async function readMetaKeysFromVault(
   console.log('Submitting read_meta_keys_from_vault transaction...')
   const signature = await program.methods
     .readMetaKeysFromVault(
-      new BN(preparedData.computationOffset),
-      preparedData.clientPubkey,
-      new BN(preparedData.sessionNonce)
+      new BN(preparedData.computationOffset, 10),
+      preparedData.clientPubkey as number[],
+      new BN(preparedData.sessionNonce, 10)
     )
     .accountsPartial(accounts)
     .preInstructions([modifyComputeUnits, addPriorityFee])
