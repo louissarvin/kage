@@ -130,11 +130,11 @@ export const Dashboard: FC = () => {
         {/* Role-based content */}
         {isAuthenticated && role && (
           <>
-            {/* NONE role - show employee setup */}
-            {role.role === 'NONE' && (
+            {/* Show employee setup if: NONE role OR stealth keys not set */}
+            {(role.role === 'NONE' || !user?.wallets[0]?.metaSpendPub) && (
               <div className="dashboard-section">
                 <h2 className="text-lg font-medium text-kage-text mb-4">
-                  Get Started
+                  {role.role === 'NONE' ? 'Get Started' : 'Complete Setup'}
                 </h2>
                 <EmployeeSetup />
               </div>
