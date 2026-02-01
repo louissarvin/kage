@@ -117,6 +117,73 @@ export async function stealthRoutes(app: FastifyInstance) {
   })
 
   /**
+   * POST /api/stealth/reset-keys
+   * Reset/clear stealth keys from database
+   *
+   * Use this when the on-chain vault creation failed but DB has keys.
+   * This allows re-registering stealth keys.
+   */
+  app.post('/reset-keys', { preHandler: [app.authenticate] }, async (request, reply) => {
+    try {
+      const { userId, walletAddress } = request.user as { userId: string; walletAddress: string }
+
+      // Find user's wallet
+      const wallet = await prisma.userWallet.findFirst({
+        where: {
+          userId,
+          address: walletAddress,
+        },
+      })
+
+      if (!wallet) {
+        return reply.status(404).send({
+          success: false,
+          error: 'Wallet not found',
+        })
+      }
+
+      // Clear stealth keys from database
+      const updated = await prisma.userWallet.update({
+        where: { id: wallet.id },
+        data: {
+          metaSpendPub: null,
+          metaViewPub: null,
+        },
+      })
+
+      // Log audit
+      await prisma.auditLog.create({
+        data: {
+          action: 'STEALTH_KEYS_RESET',
+          userId,
+          walletAddress: wallet.address,
+          metadata: {
+            walletId: wallet.id,
+            reason: 'Manual reset - vault creation may have failed',
+          },
+        },
+      })
+
+      return reply.send({
+        success: true,
+        message: 'Stealth keys cleared. You can now re-register.',
+        wallet: {
+          id: updated.id,
+          address: updated.address,
+          metaSpendPub: null,
+          metaViewPub: null,
+        },
+      })
+    } catch (error) {
+      console.error('Reset stealth keys error:', error)
+      return reply.status(500).send({
+        success: false,
+        error: 'Failed to reset stealth keys',
+      })
+    }
+  })
+
+  /**
    * GET /api/stealth/has-keys/:walletId
    * Check if wallet has stealth keys registered
    */

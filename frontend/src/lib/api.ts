@@ -414,6 +414,16 @@ class ApiClient {
     return data.metaAddress
   }
 
+  async resetStealthKeys(): Promise<void> {
+    await this.request<{
+      success: boolean
+      message: string
+    }>('/api/stealth/reset-keys', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
+  }
+
   async prepareVaultWrite(
     spendPrivKeyHex: string,
     viewPrivKeyHex: string
