@@ -71,6 +71,39 @@ export async function writeMetaKeysToVault(
   console.log('Preparing vault write data...')
   const preparedData = await api.prepareVaultWrite(spendPrivKeyHex, viewPrivKeyHex)
 
+  // Validate array lengths - must be exactly 32 bytes for [u8; 32]
+  console.log('=== Validating prepared data ===')
+  console.log('encryptedSpendLo length:', preparedData.encryptedSpendLo?.length)
+  console.log('encryptedSpendHi length:', preparedData.encryptedSpendHi?.length)
+  console.log('encryptedViewLo length:', preparedData.encryptedViewLo?.length)
+  console.log('encryptedViewHi length:', preparedData.encryptedViewHi?.length)
+  console.log('clientPubkey length:', preparedData.clientPubkey?.length)
+  console.log('computationOffset:', preparedData.computationOffset)
+  console.log('userNonce:', preparedData.userNonce)
+  console.log('mxeNonce:', preparedData.mxeNonce)
+
+  // Validate all arrays are exactly 32 bytes
+  const arrays = [
+    { name: 'encryptedSpendLo', arr: preparedData.encryptedSpendLo },
+    { name: 'encryptedSpendHi', arr: preparedData.encryptedSpendHi },
+    { name: 'encryptedViewLo', arr: preparedData.encryptedViewLo },
+    { name: 'encryptedViewHi', arr: preparedData.encryptedViewHi },
+    { name: 'clientPubkey', arr: preparedData.clientPubkey },
+  ]
+
+  for (const { name, arr } of arrays) {
+    if (!arr || arr.length !== 32) {
+      throw new Error(`Invalid ${name}: expected 32 bytes, got ${arr?.length ?? 'undefined'}`)
+    }
+    // Also validate each element is a valid u8
+    for (let i = 0; i < arr.length; i++) {
+      if (typeof arr[i] !== 'number' || arr[i] < 0 || arr[i] > 255) {
+        throw new Error(`Invalid ${name}[${i}]: expected u8 (0-255), got ${arr[i]}`)
+      }
+    }
+  }
+  console.log('=== All validations passed ===')
+
   // Step 2: Build accounts object
   const accounts = {
     payer: owner,
