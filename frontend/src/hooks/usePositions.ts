@@ -18,7 +18,6 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { PublicKey } from '@solana/web3.js'
 import { useProgram } from './useProgram'
 import {
-  fetchPositionsByOrganization,
   fetchPosition,
   getPositionStats,
   fetchAllOrganizations,
@@ -28,56 +27,19 @@ import {
   fetchCompressedPositionForClaim,
   fetchAllCompressedPositions,
   PROGRAM_ID,
-  // For checking ClaimAuthorization status
-  findClaimAuthorizationPda,
 } from '@/lib/sdk'
 import type {
   VestingPosition,
   PositionStats,
   CompressedPositionWithAccount,
 } from '@/lib/sdk'
-import { api } from '@/lib/api'
 import { getCachedStealthKeys } from '@/lib/stealth-key-cache'
-import { isMyStealthPayment, deriveStealthKeypair, decryptEphemeralPrivKey, createNullifier } from '@/lib/stealth-address'
+import { isMyStealthPayment } from '@/lib/stealth-address'
 import { fetchAllStealthPaymentEvents, getEphemeralDataFromEvents } from '@/lib/helius-events'
 
 // Light Protocol RPC endpoint
 const LIGHT_RPC_ENDPOINT = import.meta.env.VITE_HELIUS_RPC_URL || 'https://devnet.helius-rpc.com/?api-key=YOUR_KEY'
 
-/**
- * Check if a ClaimAuthorization exists and is processed on-chain
- * This is used as a fallback when the compressed position is nullified
- */
-async function checkClaimAuthorizationStatus(
-  connection: any,
-  program: any,
-  organization: PublicKey,
-  positionId: number,
-  nullifier: Uint8Array
-): Promise<{ exists: boolean; isProcessed: boolean }> {
-  try {
-    const [claimAuthPda] = findClaimAuthorizationPda(organization, positionId, nullifier)
-
-    // Try to fetch the ClaimAuthorization account
-    const accountInfo = await connection.getAccountInfo(claimAuthPda)
-
-    if (!accountInfo) {
-      return { exists: false, isProcessed: false }
-    }
-
-    // Try to decode the account data
-    try {
-      const claimAuth = await program.account.claimAuthorization.fetch(claimAuthPda)
-      return { exists: true, isProcessed: claimAuth.isProcessed === true }
-    } catch {
-      // Account exists but can't be decoded - assume it's processed
-      return { exists: true, isProcessed: true }
-    }
-  } catch (err) {
-    console.warn('[checkClaimAuthorizationStatus] Error:', err)
-    return { exists: false, isProcessed: false }
-  }
-}
 
 export interface PositionWithStats {
   publicKey: PublicKey
@@ -115,7 +77,8 @@ export function usePositions(organization: PublicKey | null): UsePositionsResult
 
     try {
       // Fetch organization data to get compressed position count
-      const orgAccount = await program.account.organization.fetch(organization)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const orgAccount = await (program.account as any).organization.fetch(organization)
       const compressedCount = orgAccount.compressedPositionCount?.toNumber() || 0
 
       if (compressedCount === 0) {
@@ -137,8 +100,6 @@ export function usePositions(organization: PublicKey | null): UsePositionsResult
 
       console.log(`[usePositions] Found ${compressedPositions.length} positions on Light Protocol`)
 
-      const currentTime = Math.floor(Date.now() / 1000)
-
       // Map compressed positions to PositionWithStats format
       const positionsWithStats: PositionWithStats[] = compressedPositions.map((pos) => {
         const startTimestamp = pos.data.startTimestamp
@@ -155,22 +116,22 @@ export function usePositions(organization: PublicKey | null): UsePositionsResult
             organization,
             schedule: pos.data.schedule,
             positionId: new BN(pos.data.positionId),
-            beneficiaryCommitment: new PublicKey(pos.data.beneficiaryCommitment),
+            beneficiaryCommitment: Array.from(pos.data.beneficiaryCommitment) as number[],
             encryptedTotalAmount: Array.from(pos.data.encryptedTotalAmount) as number[],
             encryptedClaimedAmount: Array.from(pos.data.encryptedClaimedAmount) as number[],
-            nonce: pos.data.nonce,
             startTimestamp: new BN(startTimestamp),
             isActive,
             isFullyClaimed,
+            bump: 0, // Not applicable for compressed positions
           } as VestingPosition,
           stats: {
             vestingProgress,
+            isFullyVested: isFullyClaimed || vestingProgress >= 100,
             cliffEndTime: startTimestamp,
             vestingEndTime: startTimestamp,
-            isInCliff: false,
-            totalVested: new BN(0),
-            totalClaimed: new BN(0),
-            claimable: new BN(0),
+            totalAmount: new BN(0), // Encrypted via Arcium MPC
+            claimedAmount: new BN(0), // Encrypted via Arcium MPC
+            claimableAmount: new BN(0), // Encrypted via Arcium MPC
           } as PositionStats,
           isCompressed: true,
         }

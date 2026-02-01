@@ -39,7 +39,6 @@ import {
   decryptEphemeralPrivKey,
   createNullifier,
 } from '@/lib/stealth-address'
-import { cacheStealthKeys } from '@/lib/stealth-key-cache'
 import { defaultTestStateTreeAccounts } from '@lightprotocol/stateless.js'
 
 // Light Protocol RPC endpoint
@@ -644,10 +643,10 @@ const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
   const program = useProgram()
   const {
     keys: vaultKeys,
-    hasKeys: hasCachedKeys,
+    hasKeys: _hasCachedKeys,
     isLoading: vaultLoading,
     error: vaultError,
-    status: vaultStatus,
+    status: _vaultStatus,
     retrieveKeys,
   } = useVaultKeys()
 
@@ -662,34 +661,6 @@ const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
   const wallet = user?.wallets[0]
   const metaSpendPub = wallet?.metaSpendPub
   const metaViewPub = wallet?.metaViewPub
-
-  // Handler for manual stealth key input (for testing/development)
-  const handleManualKeyInput = () => {
-    const spendKey = prompt('Enter spend private key (hex):')
-    const viewKey = prompt('Enter view private key (hex):')
-    if (spendKey && viewKey && spendKey.length === 64 && viewKey.length === 64) {
-      cacheStealthKeys(spendKey, viewKey)
-      window.location.reload()
-    } else if (spendKey || viewKey) {
-      setError('Invalid keys. Keys must be 64-character hex strings.')
-    }
-  }
-
-  // Get status message for vault retrieval
-  const getVaultStatusMessage = () => {
-    switch (vaultStatus) {
-      case 'checking-vault':
-        return 'Checking vault...'
-      case 'reading-vault':
-        return 'Reading from vault...'
-      case 'waiting-event':
-        return 'Waiting for MPC decryption...'
-      case 'decrypting':
-        return 'Decrypting...'
-      default:
-        return 'Retrieving keys...'
-    }
-  }
 
   // Fetch live vesting progress from backend
   useLayoutEffect(() => {
