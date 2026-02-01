@@ -2,14 +2,16 @@
 
 **Solana Smart Contract for Kage Protocol**
 
-An Anchor-based smart contract integrating Light Protocol (ZK compression), Arcium MPC (confidential computation), and stealth addresses for privacy-preserving payroll and vesting.
+An Anchor-based smart contract integrating Light Protocol (ZK compression), Arcium MPC (confidential computation), Noir ZK proofs (Groth16), and stealth addresses for privacy-preserving payroll and vesting.
 
 ## Tech Stack
 
 - **Anchor Framework** - Solana smart contract framework
-- **Light Protocol SDK** - ZK compressed accounts
-- **Arcium** - MPC confidential computation
+- **Light Protocol SDK** - ZK compressed accounts (5000x cost reduction)
+- **Arcium** - MPC confidential computation for encrypted amounts
+- **Noir + Barretenberg** - ZK proofs (Groth16) for claim verification
 - **Ed25519** - Signature verification for claims
+- **Stealth Addresses** - ECDH-based recipient privacy
 
 ## Program ID
 
@@ -41,6 +43,11 @@ An Anchor-based smart contract integrating Light Protocol (ZK compression), Arci
 - `store_meta_keys` - Store stealth keys in vault
 - `fetch_meta_keys` - Retrieve stealth keys
 
+### Noir ZK Circuits (Groth16)
+- `withdrawal_proof` - Proves withdrawal entitlement without revealing amounts
+- `identity_proof` - Proves ownership of a vesting position
+- `eligibility` - Lightweight pre-check for claim eligibility
+
 ## Project Structure
 
 ```
@@ -48,19 +55,23 @@ contract/
 ├── programs/
 │   └── contract/
 │       └── src/
-│           ├── lib.rs           # Main program
-│           ├── state.rs         # Account structures
-│           ├── errors.rs        # Error definitions
-│           └── groth16_verifier.rs  # ZK verification
-├── encrypted-ixs/               # Arcium MPC circuits
+│           ├── lib.rs              # Main program
+│           ├── state.rs            # Account structures
+│           ├── errors.rs           # Error definitions
+│           └── groth16_verifier.rs # On-chain Groth16 verification
+├── encrypted-ixs/                  # Arcium MPC circuits
 │   ├── init_position.rs
 │   ├── calculate_vested.rs
 │   ├── process_claim.rs
 │   ├── store_meta_keys.rs
 │   └── fetch_meta_keys.rs
-├── tests/                       # Integration tests
-├── Anchor.toml                  # Anchor config
-└── Arcium.toml                  # Arcium config
+├── lib/                            # TypeScript libraries
+│   ├── noir-proof-generator.ts     # Noir ZK proof generation
+│   └── poseidon-bn254.ts           # Poseidon hash for commitments
+├── tests/                          # Integration tests
+├── scripts/                        # Deployment & utility scripts
+├── Anchor.toml                     # Anchor config
+└── Arcium.toml                     # Arcium config
 ```
 
 ## Getting Started
@@ -70,16 +81,23 @@ contract/
 - Rust 1.70+
 - Solana CLI 1.18+
 - Anchor CLI 0.32+
+- Noir 0.36+ (for ZK circuits)
 - Yarn or npm
 
 ### Build
 
 ```bash
-# Build the program
+# Install dependencies
+yarn install
+
+# Build the Solana program
 anchor build
 
-# Build Arcium circuits
+# Build Arcium MPC circuits
 arcium build
+
+# Compile Noir circuits (if modifying)
+cd noir-circuits && nargo compile
 ```
 
 ### Test
@@ -192,6 +210,65 @@ pub mod contract {
 }
 ```
 
+## Noir ZK Proofs Integration
+
+The contract uses Noir circuits with Groth16 proofs for privacy-preserving claim verification:
+
+### Circuits
+
+| Circuit | Purpose | Public Inputs | Private Inputs |
+|---------|---------|---------------|----------------|
+| `withdrawal_proof` | Prove withdrawal entitlement | state_root, epoch_id, nullifier, withdrawal_commitment | vesting_amount, identity_secret, merkle_path, claimed_amount |
+| `identity_proof` | Prove position ownership | position_commitment | identity_preimage, position_data |
+| `eligibility` | Pre-check claim eligibility | beneficiary_commitment, nullifier, position_id, position_commitment | identity_secret, vesting_amount |
+
+### TypeScript Usage
+
+```typescript
+import { ShadowVestProver, buildVerifyWithdrawalIx } from './lib/noir-proof-generator';
+
+// Initialize prover with compiled circuits
+const prover = new ShadowVestProver();
+await prover.initialize({
+  withdrawal_proof: withdrawalArtifact,
+  identity_proof: identityArtifact,
+  eligibility: eligibilityArtifact,
+});
+
+// Generate proof
+const proof = await prover.generateWithdrawalProof({
+  state_root: '0x...',
+  epoch_id: 1n,
+  nullifier: '0x...',
+  withdrawal_commitment: '0x...',
+  vesting_amount: 1000000n,
+  identity_secret: '0x...',
+  vesting_path: [...], // 32 Merkle siblings
+  claimed_amount: 500000n,
+});
+
+// Build Solana instruction
+const { instruction, computeBudgetIx } = buildVerifyWithdrawalIx(
+  programId,
+  verifier,
+  vkAccount,
+  proof
+);
+```
+
+### Commitment Derivation
+
+```typescript
+// Identity commitment: Poseidon(identity_secret)
+const identityCommitment = await deriveIdentityCommitment(identitySecret);
+
+// Nullifier: Poseidon(identity_secret, epoch_id)
+const nullifier = await deriveNullifier(identitySecret, epochId);
+
+// Withdrawal commitment: Poseidon(claimed_amount)
+const withdrawalCommitment = await deriveWithdrawalCommitment(claimedAmount);
+```
+
 ## Light Protocol Integration
 
 Compressed positions use Light Protocol for 5000x cost savings:
@@ -211,10 +288,12 @@ light_sdk::create_account(compressed_position)?;
 
 ## Security
 
-- **Nullifiers** prevent double-claims
+- **Nullifiers** prevent double-claims (derived via Poseidon hash)
 - **Ed25519 signatures** verify claim authorization
-- **Arcium MPC** ensures amounts stay encrypted
+- **Arcium MPC** ensures amounts stay encrypted during computation
+- **Noir ZK proofs** verify claims without revealing amounts (Groth16)
 - **Light Protocol** provides state compression with ZK proofs
+- **Stealth addresses** hide recipient identities via ECDH
 
 ## License
 
