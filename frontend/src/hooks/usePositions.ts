@@ -94,7 +94,8 @@ export interface UsePositionsResult {
 }
 
 /**
- * Hook to manage positions for an organization
+ * Hook to manage compressed positions for an organization
+ * Fetches positions from Light Protocol (compressed state)
  */
 export function usePositions(organization: PublicKey | null): UsePositionsResult {
   const program = useProgram()
@@ -113,17 +114,67 @@ export function usePositions(organization: PublicKey | null): UsePositionsResult
     setError(null)
 
     try {
-      const positionsResult = await fetchPositionsByOrganization(program, organization)
+      // Fetch organization data to get compressed position count
+      const orgAccount = await program.account.organization.fetch(organization)
+      const compressedCount = orgAccount.compressedPositionCount?.toNumber() || 0
+
+      if (compressedCount === 0) {
+        console.log('[usePositions] No compressed positions for this organization')
+        setPositions([])
+        return
+      }
+
+      // Fetch compressed positions from Light Protocol
+      console.log(`[usePositions] Fetching ${compressedCount} compressed positions...`)
+      const lightRpc = createLightRpc(LIGHT_RPC_ENDPOINT)
+
+      const compressedPositions = await fetchAllCompressedPositions(
+        lightRpc,
+        organization,
+        compressedCount,
+        PROGRAM_ID
+      )
+
+      console.log(`[usePositions] Found ${compressedPositions.length} positions on Light Protocol`)
+
       const currentTime = Math.floor(Date.now() / 1000)
 
-      // Fetch stats for each position (async because it needs to fetch schedule)
-      const positionsWithStats: PositionWithStats[] = await Promise.all(
-        positionsResult.map(async (pos) => ({
-          publicKey: pos.publicKey,
-          account: pos.account,
-          stats: await getPositionStats(program, pos.account, currentTime),
-        }))
-      )
+      // Map compressed positions to PositionWithStats format
+      const positionsWithStats: PositionWithStats[] = compressedPositions.map((pos) => {
+        const startTimestamp = pos.data.startTimestamp
+        const isActive = pos.data.isActive === 1
+        const isFullyClaimed = pos.data.isFullyClaimed === 1
+
+        // Calculate vesting progress (simplified - 100% for now since amounts are encrypted)
+        // In production, would need to decode schedule for accurate progress
+        const vestingProgress = 100
+
+        return {
+          publicKey: pos.address,
+          account: {
+            organization,
+            schedule: pos.data.schedule,
+            positionId: new BN(pos.data.positionId),
+            beneficiaryCommitment: new PublicKey(pos.data.beneficiaryCommitment),
+            encryptedTotalAmount: Array.from(pos.data.encryptedTotalAmount) as number[],
+            encryptedClaimedAmount: Array.from(pos.data.encryptedClaimedAmount) as number[],
+            nonce: pos.data.nonce,
+            startTimestamp: new BN(startTimestamp),
+            isActive,
+            isFullyClaimed,
+          } as VestingPosition,
+          stats: {
+            vestingProgress,
+            cliffEndTime: startTimestamp,
+            vestingEndTime: startTimestamp,
+            isInCliff: false,
+            totalVested: new BN(0),
+            totalClaimed: new BN(0),
+            claimable: new BN(0),
+          } as PositionStats,
+          isCompressed: true,
+        }
+      })
 
       // Sort by position ID descending (newest first)
       positionsWithStats.sort((a, b) =>

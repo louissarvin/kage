@@ -1,5 +1,5 @@
 import type { FC } from 'react'
-import { useRef, useLayoutEffect } from 'react'
+import { useState, useRef, useLayoutEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { useWallet } from '@solana/wallet-adapter-react'
 import gsap from 'gsap'
@@ -177,68 +177,7 @@ export const Dashboard: FC = () => {
                 </div>
 
                 {/* Recent positions */}
-                <Card className="dashboard-section">
-                  <CardContent>
-                    <h2 className="text-lg font-medium text-kage-text mb-4">
-                      Recent Positions
-                    </h2>
-                    {loading ? (
-                      <div className="py-12 flex justify-center">
-                        <Loader2 className="w-8 h-8 text-kage-text-dim animate-spin" />
-                      </div>
-                    ) : positions.length === 0 ? (
-                      <div className="py-12 text-center">
-                        <p className="text-kage-text-dim">No positions yet</p>
-                        <p className="text-sm text-kage-text-dim mt-1">
-                          Positions will appear here once created
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        {positions.slice(0, 5).map((pos) => (
-                          <div
-                            key={pos.publicKey.toBase58()}
-                            className="p-4 rounded-lg bg-kage-elevated border border-kage-border-subtle"
-                          >
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <p className="font-medium text-kage-text">
-                                  Position #{pos.account.positionId.toString()}
-                                </p>
-                                <p className="text-sm text-kage-text-muted mt-1">
-                                  {pos.stats.vestingProgress}% vested
-                                </p>
-                              </div>
-                              <div className="text-right">
-                                <p className="text-sm text-kage-text">
-                                  {pos.account.isActive ? 'Active' : 'Inactive'}
-                                </p>
-                                <p className="text-xs text-kage-text-dim mt-1">
-                                  {pos.account.isFullyClaimed ? 'Fully claimed' : 'In progress'}
-                                </p>
-                              </div>
-                            </div>
-                            {/* Progress bar */}
-                            <div className="mt-3 h-1.5 bg-kage-subtle rounded-full overflow-hidden">
-                              <div
-                                className="h-full bg-kage-accent rounded-full transition-all duration-500"
-                                style={{ width: `${pos.stats.vestingProgress}%` }}
-                              />
-                            </div>
-                          </div>
-                        ))}
-                        {positions.length > 5 && (
-                          <Link to="/positions">
-                            <Button variant="ghost" className="w-full">
-                              View all {positions.length} positions
-                              <ArrowRight className="w-4 h-4 ml-2" />
-                            </Button>
-                          </Link>
-                        )}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
+                <RecentPositions positions={positions} loading={loading} />
               </>
             )}
 
@@ -358,6 +297,137 @@ const RoleCard: FC<RoleCardProps> = ({ role, user }) => {
             </div>
           </div>
         </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+// Recent Positions with pagination
+interface RecentPositionsProps {
+  positions: ReturnType<typeof usePositions>['positions']
+  loading: boolean
+}
+
+const ITEMS_PER_PAGE = 5
+
+const RecentPositions: FC<RecentPositionsProps> = ({ positions, loading }) => {
+  const [currentPage, setCurrentPage] = useState(0)
+
+  const totalPages = Math.ceil(positions.length / ITEMS_PER_PAGE)
+  const canGoLeft = currentPage > 0
+  const canGoRight = currentPage < totalPages - 1
+
+  const paginatedPositions = positions.slice(
+    currentPage * ITEMS_PER_PAGE,
+    (currentPage + 1) * ITEMS_PER_PAGE
+  )
+
+  return (
+    <Card className="dashboard-section">
+      <CardContent>
+        {/* Header with pagination */}
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-medium text-kage-text">
+            Recent Positions
+            {positions.length > 0 && (
+              <span className="text-kage-text-dim ml-2 text-sm font-normal">
+                ({positions.length})
+              </span>
+            )}
+          </h2>
+          {totalPages > 1 && (
+            <div className="flex items-center gap-2 bg-kage-subtle rounded-full px-1 py-1">
+              <button
+                onClick={() => setCurrentPage(p => p - 1)}
+                disabled={!canGoLeft}
+                className={`w-8 h-8 rounded-full bg-kage-text-muted flex items-center justify-center hover:bg-kage-text transition-all duration-200 ${
+                  canGoLeft ? 'opacity-100 scale-100' : 'opacity-0 scale-0 pointer-events-none'
+                }`}
+              >
+                <svg className="w-4 h-4 text-kage-void" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
+              <button
+                onClick={() => setCurrentPage(p => p + 1)}
+                disabled={!canGoRight}
+                className={`w-8 h-8 rounded-full bg-kage-text-muted flex items-center justify-center hover:bg-kage-text transition-all duration-200 ${
+                  canGoRight ? 'opacity-100 scale-100' : 'opacity-0 scale-0 pointer-events-none'
+                }`}
+              >
+                <svg className="w-4 h-4 text-kage-void" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {loading ? (
+          <div className="py-12 flex justify-center">
+            <Loader2 className="w-8 h-8 text-kage-text-dim animate-spin" />
+          </div>
+        ) : positions.length === 0 ? (
+          <div className="py-12 text-center">
+            <p className="text-kage-text-dim">No positions yet</p>
+            <p className="text-sm text-kage-text-dim mt-1">
+              Positions will appear here once created
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {paginatedPositions.map((pos) => {
+              const isClaimed = pos.account.isFullyClaimed
+              const statusText = isClaimed
+                ? 'Claimed'
+                : pos.account.isActive
+                  ? 'Active'
+                  : 'Inactive'
+              const statusColor = isClaimed
+                ? 'text-kage-text-dim'
+                : pos.account.isActive
+                  ? 'text-green-400'
+                  : 'text-yellow-400'
+
+              return (
+                <div
+                  key={pos.publicKey.toBase58()}
+                  className={`p-4 rounded-lg bg-kage-elevated border border-kage-border-subtle ${isClaimed ? 'opacity-60' : ''}`}
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-medium text-kage-text">
+                        Position #{pos.account.positionId.toString()}
+                      </p>
+                      <p className="text-sm text-kage-text-muted mt-1">
+                        {pos.stats.vestingProgress}% vested
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className={`text-sm font-medium ${statusColor}`}>
+                        {statusText}
+                      </p>
+                      <p className="text-xs text-kage-text-dim mt-1">
+                        {isClaimed
+                          ? 'Completed'
+                          : pos.stats.vestingProgress >= 100
+                            ? 'Ready to claim'
+                            : 'Vesting'}
+                      </p>
+                    </div>
+                  </div>
+                  {/* Progress bar */}
+                  <div className="mt-3 h-1.5 bg-kage-subtle rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-500 ${isClaimed ? 'bg-kage-text-dim' : 'bg-kage-accent'}`}
+                      style={{ width: `${pos.stats.vestingProgress}%` }}
+                    />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
       </CardContent>
     </Card>
   )
