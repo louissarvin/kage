@@ -85,10 +85,23 @@ function getPublicKey(privateKey: Uint8Array): Uint8Array {
 
 /**
  * Compute ECDH shared secret using X25519
+ *
+ * IMPORTANT: This must match the contract's implementation (lib/stealth-address.ts)
+ * which uses @noble/ed25519's getSharedSecret.
+ *
+ * Ed25519 keys must be converted to X25519 format:
+ * - Private key: sha512(seed)[0:32] + clamp → X25519 scalar
+ * - Public key: birational map from Edwards to Montgomery → X25519 u-coordinate
  */
 function getSharedSecret(privateKey: Uint8Array, publicKey: Uint8Array): Uint8Array {
-  // Convert Ed25519 keys to X25519 for ECDH
-  return x25519.getSharedSecret(privateKey, publicKey)
+  // Convert Ed25519 seed to X25519 scalar (sha512 + clamp)
+  const x25519Priv = ed25519.utils.toMontgomerySecret(privateKey)
+
+  // Convert Ed25519 public key to X25519 (Montgomery u-coordinate)
+  const x25519Pub = ed25519.utils.toMontgomery(publicKey)
+
+  // Perform X25519 ECDH
+  return x25519.getSharedSecret(x25519Priv, x25519Pub)
 }
 
 // =============================================================================

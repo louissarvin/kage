@@ -8,7 +8,7 @@
 import { PublicKey, SystemProgram, ComputeBudgetProgram } from '@solana/web3.js'
 import BN from 'bn.js'
 import type { ShadowVestProgram } from './program'
-import { api, type PrepareVaultWriteResponse, type PrepareVaultReadResponse } from '../api'
+import { api } from '../api'
 
 // =============================================================================
 // Types
@@ -277,18 +277,33 @@ export async function getMetaKeysVault(
   isInitialized: boolean
   owner: PublicKey
 } | null> {
-  const [vaultPda] = PublicKey.findProgramAddressSync(
+  const [vaultPda, bump] = PublicKey.findProgramAddressSync(
     [Buffer.from('meta_keys_vault'), owner.toBuffer()],
     program.programId
   )
 
+  // Diagnostic logging
+  console.log('=== getMetaKeysVault Diagnostic ===')
+  console.log('Owner address:', owner.toBase58())
+  console.log('Program ID:', program.programId.toBase58())
+  console.log('Derived vault PDA:', vaultPda.toBase58())
+  console.log('PDA bump:', bump)
+
   try {
     const account = await (program.account as any).metaKeysVault.fetch(vaultPda)
+    console.log('Vault account FOUND!')
+    console.log('  isInitialized:', account.isInitialized)
+    console.log('  owner:', account.owner?.toBase58())
+    console.log('  ciphertexts length:', account.ciphertexts?.length)
+    console.log('=== End Diagnostic ===')
     return {
       isInitialized: account.isInitialized,
       owner: account.owner,
     }
-  } catch {
+  } catch (err) {
+    console.log('Vault account NOT FOUND or fetch error')
+    console.log('  Error:', err instanceof Error ? err.message : String(err))
+    console.log('=== End Diagnostic ===')
     return null
   }
 }

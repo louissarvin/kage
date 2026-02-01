@@ -3,6 +3,15 @@
  *
  * Provides vesting position data and management.
  * Note: Amounts are encrypted via Arcium MPC - displayed values are placeholders.
+ *
+ * Position Discovery Flow (Full On-Chain):
+ * 1. Fetch all organizations from on-chain (Anchor program)
+ * 2. Scan compressed positions from Light Protocol for each organization
+ * 3. Fetch StealthPaymentEvents from Helius for ephemeral data
+ * 4. Use isMyStealthPayment to verify ownership
+ * 5. Return only positions that belong to the current user
+ *
+ * This is fully on-chain - no database dependency for position discovery.
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
@@ -10,21 +19,34 @@ import { PublicKey } from '@solana/web3.js'
 import { useProgram } from './useProgram'
 import {
   fetchPositionsByOrganization,
-  fetchPositionsByCommitment,
   fetchPosition,
   getPositionStats,
-  createBeneficiaryCommitment,
+  fetchAllOrganizations,
   BN,
+  // Light Protocol for on-chain compressed position data
+  createLightRpc,
+  fetchCompressedPositionForClaim,
+  fetchAllCompressedPositions,
+  PROGRAM_ID,
 } from '@/lib/sdk'
 import type {
   VestingPosition,
   PositionStats,
+  CompressedPositionWithAccount,
 } from '@/lib/sdk'
+import { api } from '@/lib/api'
+import { getCachedStealthKeys } from '@/lib/stealth-key-cache'
+import { isMyStealthPayment } from '@/lib/stealth-address'
+import { fetchAllStealthPaymentEvents, getEphemeralDataFromEvents } from '@/lib/helius-events'
+
+// Light Protocol RPC endpoint
+const LIGHT_RPC_ENDPOINT = import.meta.env.VITE_HELIUS_RPC_URL || 'https://devnet.helius-rpc.com/?api-key=YOUR_KEY'
 
 export interface PositionWithStats {
   publicKey: PublicKey
   account: VestingPosition
   stats: PositionStats
+  isCompressed?: boolean
 }
 
 export interface UsePositionsResult {
@@ -173,21 +195,116 @@ export function usePositionAggregates(positions: PositionWithStats[]) {
 }
 
 /**
- * Hook to fetch positions for an employee by their stealth keys
- * Uses the beneficiary commitment derived from meta-address
+ * On-chain compressed position data from Light Protocol
  */
-export function useEmployeePositions(
-  metaSpendPub: string | null,
-  metaViewPub: string | null
-): UsePositionsResult {
+export interface OnChainPositionData {
+  owner: string
+  organization: string
+  schedule: string
+  positionId: number
+  beneficiaryCommitment: string
+  startTimestamp: number
+  isActive: boolean
+  isFullyClaimed: boolean
+  // Raw data for claims
+  compressedAddress: string
+  hash: Uint8Array
+  treeInfo: {
+    tree: string
+    queue: string
+  }
+}
+
+/**
+ * Extended position type that includes stealth data needed for claims
+ */
+export interface MyPositionWithStats {
+  // Database ID
+  id: string
+  // Position PDA (may be derived for compressed positions)
+  pubkey: string
+  positionId: number
+  // Organization info
+  organizationPubkey: string
+  tokenMint: string
+  // Schedule info
+  scheduleIndex: number
+  schedulePubkey: string
+  // Stealth data (needed for claim)
+  stealthOwner: string
+  ephemeralPub: string
+  encryptedEphemeralPayload: string | null
+  // Position type
+  isCompressed: boolean
+  // Timing
+  startTimestamp: string
+  cliffEndTime: number
+  vestingEndTime: number
+  vestingProgress: number
+  status: 'cliff' | 'vesting' | 'vested'
+  isInCliff: boolean
+  isFullyVested: boolean
+  isActive: boolean
+  // Link info
+  receivedVia: {
+    slug: string
+    label: string | null
+  } | null
+  // On-chain data (fetched from Light Protocol)
+  onChainData?: OnChainPositionData
+  // Verification status
+  verificationStatus: 'verified' | 'mismatch' | 'not_found' | 'error' | 'pending'
+}
+
+export interface UseMyPositionsResult {
+  positions: MyPositionWithStats[]
+  loading: boolean
+  error: string | null
+  refresh: () => Promise<void>
+  /**
+   * Fetch on-chain compressed position data from Light Protocol
+   * Call this before claiming to get the latest state and validity proof
+   *
+   * Returns CompressedPositionWithAccount with:
+   * - data: parsed position data (beneficiaryCommitment, encrypted amounts, etc.)
+   * - address: compressed account address
+   * - hash: account hash for validity proof
+   * - treeInfo: tree and queue pubkeys for validity proof
+   */
+  fetchOnChainData: (position: MyPositionWithStats) => Promise<CompressedPositionWithAccount | null>
+}
+
+/**
+ * Hook to fetch positions using FULL ON-CHAIN discovery
+ * Following the same pattern as contract tests (stealth-compressed-flow.ts)
+ *
+ * Discovery Flow:
+ * 1. Fetch all organizations from on-chain (Anchor program accounts)
+ * 2. Scan compressed positions from Light Protocol
+ * 3. Fetch StealthPaymentEvents from blockchain for ephemeral data
+ * 4. Use isMyStealthPayment to verify ownership
+ * 5. Return only positions that belong to the current user
+ *
+ * @param metaSpendPub - User's meta spend public key (for stealth verification)
+ */
+export function useMyPositions(metaSpendPub?: string | null): UseMyPositionsResult {
+  // IMPORTANT: Call useProgram unconditionally to maintain hook order
   const program = useProgram()
 
-  const [positions, setPositions] = useState<PositionWithStats[]>([])
+  const [positions, setPositions] = useState<MyPositionWithStats[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
-    if (!program || !metaSpendPub || !metaViewPub) {
+    if (!metaSpendPub || !program) {
+      setPositions([])
+      return
+    }
+
+    // Get cached stealth keys for verification
+    const cachedKeys = getCachedStealthKeys()
+    if (!cachedKeys) {
+      console.log('[useMyPositions] No cached stealth keys - cannot verify ownership')
       setPositions([])
       return
     }
@@ -196,39 +313,228 @@ export function useEmployeePositions(
     setError(null)
 
     try {
-      // Create beneficiary commitment from stealth keys
-      const commitment = await createBeneficiaryCommitment(metaSpendPub, metaViewPub)
+      console.log('[useMyPositions] === FULL ON-CHAIN POSITION DISCOVERY ===')
 
-      // Fetch positions matching this commitment
-      const positionsResult = await fetchPositionsByCommitment(program, commitment)
-      const currentTime = Math.floor(Date.now() / 1000)
+      // Step 1: Fetch ALL organizations from on-chain
+      console.log('[useMyPositions] Step 1: Fetching organizations from on-chain...')
+      const organizations = await fetchAllOrganizations(program)
+      console.log(`[useMyPositions] Found ${organizations.length} organizations on-chain`)
 
-      // Fetch stats for each position
-      const positionsWithStats: PositionWithStats[] = await Promise.all(
-        positionsResult.map(async (pos) => ({
-          publicKey: pos.publicKey,
-          account: pos.account,
-          stats: await getPositionStats(program, pos.account, currentTime),
-        }))
+      // Filter to only orgs with compressed positions
+      const orgsWithCompressed = organizations.filter(
+        org => org.account.compressedPositionCount?.toNumber() > 0
       )
+      console.log(`[useMyPositions] ${orgsWithCompressed.length} organizations have compressed positions`)
 
-      // Sort by start timestamp descending (newest first)
-      positionsWithStats.sort((a, b) =>
-        b.account.startTimestamp.toNumber() - a.account.startTimestamp.toNumber()
-      )
+      if (orgsWithCompressed.length === 0) {
+        console.log('[useMyPositions] No compressed positions found on-chain')
+        setPositions([])
+        return
+      }
 
-      setPositions(positionsWithStats)
+      // Step 2: Fetch StealthPaymentEvents from blockchain
+      console.log('[useMyPositions] Step 2: Fetching StealthPaymentEvents from blockchain...')
+      const stealthEvents = await fetchAllStealthPaymentEvents(500, true) // Force refresh
+      console.log(`[useMyPositions] Found ${stealthEvents.size} stealth payment events`)
+
+      // Step 3: Scan compressed positions from Light Protocol
+      console.log('[useMyPositions] Step 3: Scanning compressed positions from Light Protocol...')
+      const lightRpc = createLightRpc(LIGHT_RPC_ENDPOINT)
+
+      const myPositions: MyPositionWithStats[] = []
+
+      for (const org of orgsWithCompressed) {
+        const compressedCount = org.account.compressedPositionCount.toNumber()
+        console.log(`[useMyPositions] Scanning org ${org.publicKey.toBase58().slice(0, 8)}... (${compressedCount} positions)`)
+
+        // Fetch all compressed positions for this org
+        const compressedPositions = await fetchAllCompressedPositions(
+          lightRpc,
+          org.publicKey,
+          compressedCount,
+          PROGRAM_ID
+        )
+
+        console.log(`[useMyPositions] Found ${compressedPositions.length} positions on Light Protocol`)
+
+        // Step 4: For each position, verify ownership using isMyStealthPayment
+        for (const pos of compressedPositions) {
+          try {
+            const beneficiaryCommitment = new PublicKey(pos.data.beneficiaryCommitment)
+
+            // Get ephemeral data from blockchain events
+            const eventData = getEphemeralDataFromEvents(
+              stealthEvents,
+              org.publicKey,
+              pos.data.positionId
+            )
+
+            if (!eventData) {
+              console.log(`[useMyPositions] No event data for position ${pos.data.positionId} - skipping`)
+              continue
+            }
+
+            console.log(`[useMyPositions] Found event data for position ${pos.data.positionId}`)
+            console.log(`[useMyPositions] DEBUG - Verifying ownership:`)
+            console.log(`  stealthAddress (beneficiaryCommitment): ${beneficiaryCommitment.toBase58().slice(0, 16)}...`)
+            console.log(`  ephemeralPubkey: ${eventData.ephemeralPubkey.slice(0, 16)}...`)
+            console.log(`  metaSpendPub: ${metaSpendPub.slice(0, 16)}...`)
+            console.log(`  viewPrivKeyHex: ${cachedKeys.viewPrivKeyHex.slice(0, 16)}...`)
+
+            // Verify ownership using stealth verification
+            // Parameter order: viewPrivHex, spendPub58, ephPub58, stealthAddress
+            const isMine = await isMyStealthPayment(
+              cachedKeys.viewPrivKeyHex,
+              metaSpendPub,
+              eventData.ephemeralPubkey,
+              beneficiaryCommitment
+            )
+
+            console.log(`[useMyPositions] isMyStealthPayment result: ${isMine}`)
+
+            if (!isMine) {
+              console.log(`[useMyPositions] Position ${pos.data.positionId} does not belong to us - skipping`)
+              continue
+            }
+
+            console.log(`[useMyPositions] ✓ VERIFIED MY POSITION: ${pos.data.positionId}`)
+
+            // Build position data
+            const startTimestamp = pos.data.startTimestamp
+            const onChainData: OnChainPositionData = {
+              owner: pos.data.owner.toBase58(),
+              organization: pos.data.organization.toBase58(),
+              schedule: pos.data.schedule.toBase58(),
+              positionId: pos.data.positionId,
+              beneficiaryCommitment: beneficiaryCommitment.toBase58(),
+              startTimestamp,
+              isActive: pos.data.isActive === 1,
+              isFullyClaimed: pos.data.isFullyClaimed === 1,
+              compressedAddress: pos.address.toBase58(),
+              hash: new Uint8Array(0),
+              treeInfo: { tree: '', queue: '' },
+            }
+
+            myPositions.push({
+              id: `${org.publicKey.toBase58()}-${pos.data.positionId}`,
+              pubkey: pos.address.toBase58(),
+              positionId: pos.data.positionId,
+              organizationPubkey: org.publicKey.toBase58(),
+              tokenMint: org.account.tokenMint.toBase58(),
+              scheduleIndex: 0,
+              schedulePubkey: pos.data.schedule.toBase58(),
+              stealthOwner: beneficiaryCommitment.toBase58(),
+              ephemeralPub: eventData.ephemeralPubkey,
+              encryptedEphemeralPayload: eventData.encryptedPayload,
+              isCompressed: true,
+              startTimestamp: startTimestamp.toString(),
+              cliffEndTime: startTimestamp,
+              vestingEndTime: startTimestamp,
+              vestingProgress: 100,
+              status: 'vested',
+              isInCliff: false,
+              isFullyVested: true,
+              isActive: pos.data.isActive === 1,
+              receivedVia: null,
+              onChainData,
+              verificationStatus: 'verified',
+            })
+          } catch (err) {
+            console.warn(`[useMyPositions] Error processing position ${pos.data.positionId}:`, err)
+          }
+        }
+      }
+
+      console.log(`[useMyPositions] === DISCOVERY COMPLETE: Found ${myPositions.length} positions ===`)
+      setPositions(myPositions)
     } catch (err) {
-      console.error('Failed to fetch employee positions:', err)
-      setError(err instanceof Error ? err.message : 'Failed to fetch positions')
+      console.error('[useMyPositions] On-chain scan failed:', err)
+      setError(err instanceof Error ? err.message : 'Failed to scan positions')
     } finally {
       setLoading(false)
     }
-  }, [program, metaSpendPub, metaViewPub])
+  }, [program, metaSpendPub])
+
+  /**
+   * Fetch on-chain compressed position data from Light Protocol
+   * This is needed when claiming to get:
+   * - Current state (encryptedClaimedAmount, isFullyClaimed, etc.)
+   * - Account hash and tree info for validity proof
+   *
+   * Based on contract tests: compressed-claim-withdraw.ts, stealth-compressed-flow.ts
+   */
+  const fetchOnChainData = useCallback(async (position: MyPositionWithStats): Promise<CompressedPositionWithAccount | null> => {
+    if (!position.isCompressed) {
+      console.warn('fetchOnChainData is only for compressed positions')
+      return null
+    }
+
+    try {
+      const lightRpc = createLightRpc(LIGHT_RPC_ENDPOINT)
+      const organizationPubkey = new PublicKey(position.organizationPubkey)
+
+      // Fetch compressed position from Light Protocol with full account info
+      // This returns: data, address, hash, treeInfo - everything needed for claims
+      const result = await fetchCompressedPositionForClaim(
+        lightRpc,
+        organizationPubkey,
+        position.positionId,
+        PROGRAM_ID
+      )
+
+      if (result) {
+        console.log('Fetched on-chain compressed position:')
+        console.log('  Address:', result.address.toString())
+        console.log('  Position ID:', result.data.positionId)
+        console.log('  Is Active:', result.data.isActive)
+        console.log('  Is Fully Claimed:', result.data.isFullyClaimed)
+      }
+
+      return result
+    } catch (err) {
+      console.error('Failed to fetch on-chain compressed data:', err)
+      return null
+    }
+  }, [])
 
   useEffect(() => {
     refresh()
   }, [refresh])
+
+  return {
+    positions,
+    loading,
+    error,
+    refresh,
+    fetchOnChainData,
+  }
+}
+
+/**
+ * @deprecated Use useMyPositions instead for stealth compressed positions
+ * Hook to fetch positions for an employee by their stealth keys
+ * Uses the beneficiary commitment derived from meta-address
+ * Note: This only works for OLD positions where beneficiaryCommitment = metaSpendPub
+ */
+export function useEmployeePositions(
+  metaSpendPub: string | null,
+  metaViewPub: string | null
+): UsePositionsResult {
+  // This hook is deprecated - use useMyPositions instead
+  // Return empty for now to avoid breaking changes
+  const [positions] = useState<PositionWithStats[]>([])
+  const [loading] = useState(false)
+  const [error] = useState<string | null>(null)
+
+  const refresh = useCallback(async () => {
+    console.warn('useEmployeePositions is deprecated. Use useMyPositions instead.')
+  }, [])
+
+  useEffect(() => {
+    if (metaSpendPub && metaViewPub) {
+      console.warn('useEmployeePositions is deprecated. Use useMyPositions instead.')
+    }
+  }, [metaSpendPub, metaViewPub])
 
   return {
     positions,

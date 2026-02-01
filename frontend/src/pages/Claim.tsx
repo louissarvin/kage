@@ -1,23 +1,96 @@
 import type { FC } from 'react'
-import { useState, useRef, useLayoutEffect } from 'react'
+import { useState, useRef, useLayoutEffect, useMemo } from 'react'
 import { motion } from 'framer-motion'
 import gsap from 'gsap'
+import {
+  PublicKey,
+  Ed25519Program,
+  ComputeBudgetProgram,
+  TransactionMessage,
+  VersionedTransaction,
+  SystemProgram,
+  SYSVAR_INSTRUCTIONS_PUBKEY,
+} from '@solana/web3.js'
+import { getAssociatedTokenAddress } from '@solana/spl-token'
 import {
   Shield,
   Unlock,
   CheckCircle,
   ArrowRight,
   Loader2,
+  AlertCircle,
+  Zap,
+  Key,
 } from 'lucide-react'
-import { Card, CardContent, CardHeader, Button, Input, Badge } from '@/components/ui'
+import { Card, CardContent, CardHeader, Button, Badge } from '@/components/ui'
 import { Layout } from '@/components/layout'
+import { formatAddress } from '@/lib/constants'
+import { useAuth } from '@/contexts/AuthContext'
+import { useEmployeePositions, useVaultKeys, type PositionWithStats } from '@/hooks'
+import { useProgram } from '@/hooks/useProgram'
+import { api, ApiError } from '@/lib/api'
+import { cacheStealthKeys } from '@/lib/stealth-key-cache'
+import {
+  deriveStealthKeypair,
+  decryptEphemeralPrivKey,
+  createNullifier,
+} from '@/lib/stealth-address'
+import {
+  createLightRpc,
+  buildLightRemainingAccountsFromTrees,
+  serializeValidityProof,
+  serializeCompressedAccountMeta,
+  parseCompressedPositionData,
+  BN,
+  findClaimAuthorizationPda,
+  findNullifierPda,
+  fetchOrganization,
+  PROGRAM_ID,
+} from '@/lib/sdk'
+import { defaultTestStateTreeAccounts, bn } from '@lightprotocol/stateless.js'
+
+// Light Protocol RPC endpoint
+const LIGHT_RPC_ENDPOINT = import.meta.env.VITE_HELIUS_RPC_URL || 'https://devnet.helius-rpc.com/?api-key=YOUR_KEY'
 
 type ClaimStep = 'select' | 'authorize' | 'process' | 'withdraw' | 'complete'
+
+interface SelectedPosition {
+  publicKey: PublicKey
+  positionId: number
+  organization: PublicKey
+  vestingProgress: number
+  isCompressed: boolean
+}
 
 export const Claim: FC = () => {
   const containerRef = useRef<HTMLDivElement>(null)
   const [step, setStep] = useState<ClaimStep>('select')
-  const [claimAmount, setClaimAmount] = useState('')
+  const [selectedPosition, setSelectedPosition] = useState<SelectedPosition | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [txSignature, setTxSignature] = useState<string | null>(null)
+  const [claimAuthPda, setClaimAuthPda] = useState<string | null>(null)
+  const [jobId, setJobId] = useState<string | null>(null)
+
+  // Get user's stealth keys
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth()
+  const metaSpendPub = user?.wallets[0]?.metaSpendPub ?? null
+  const metaViewPub = user?.wallets[0]?.metaViewPub ?? null
+  const hasStealthKeys = !!metaSpendPub && !!metaViewPub
+
+  // Fetch positions
+  const { positions, loading: positionsLoading } = useEmployeePositions(
+    metaSpendPub,
+    metaViewPub
+  )
+
+  // Filter to claimable positions (not in cliff, active)
+  const claimablePositions = useMemo(() => {
+    const currentTime = Math.floor(Date.now() / 1000)
+    return positions.filter((pos) => {
+      const isInCliff = currentTime < pos.stats.cliffEndTime
+      return pos.account.isActive && !isInCliff && pos.stats.vestingProgress > 0
+    })
+  }, [positions])
 
   const steps = [
     { id: 'select', label: 'Select Position' },
@@ -44,6 +117,85 @@ export const Claim: FC = () => {
     }, containerRef)
     return () => ctx.revert()
   }, [])
+
+  const handleSelectPosition = (pos: PositionWithStats) => {
+    setSelectedPosition({
+      publicKey: pos.publicKey,
+      positionId: pos.account.positionId.toNumber(),
+      organization: pos.account.organization,
+      vestingProgress: pos.stats.vestingProgress,
+      isCompressed: pos.isCompressed ?? false,
+    })
+    setError(null)
+    setStep('authorize')
+  }
+
+  const handleReset = () => {
+    setStep('select')
+    setSelectedPosition(null)
+    setError(null)
+    setTxSignature(null)
+    setClaimAuthPda(null)
+    setJobId(null)
+  }
+
+  // Loading state
+  if (authLoading || positionsLoading) {
+    return (
+      <Layout>
+        <div className="flex items-center justify-center min-h-[60vh]">
+          <Loader2 className="w-8 h-8 text-kage-accent animate-spin" />
+        </div>
+      </Layout>
+    )
+  }
+
+  // Not authenticated
+  if (!isAuthenticated) {
+    return (
+      <Layout>
+        <div ref={containerRef} className="max-w-2xl mx-auto">
+          <Card>
+            <CardContent className="py-16 text-center">
+              <h3 className="text-xl font-semibold text-kage-text mb-2">
+                Connect Wallet
+              </h3>
+              <p className="text-kage-text-muted max-w-md mx-auto">
+                Connect your wallet and sign in to claim your vested tokens.
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      </Layout>
+    )
+  }
+
+  // No stealth keys
+  if (!hasStealthKeys) {
+    return (
+      <Layout>
+        <div ref={containerRef} className="max-w-2xl mx-auto">
+          <Card>
+            <CardContent className="py-16 text-center">
+              <div className="w-16 h-16 rounded-2xl bg-yellow-500/10 mx-auto mb-6 flex items-center justify-center">
+                <AlertCircle className="w-8 h-8 text-yellow-400" />
+              </div>
+              <h3 className="text-xl font-semibold text-kage-text mb-2">
+                Complete Setup
+              </h3>
+              <p className="text-kage-text-muted max-w-md mx-auto mb-6">
+                You need to register your stealth keys before you can claim tokens.
+                Go to the Dashboard to complete your employee setup.
+              </p>
+              <Button variant="primary" onClick={() => window.location.href = '/dashboard'}>
+                Go to Dashboard
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      </Layout>
+    )
+  }
 
   return (
     <Layout>
@@ -111,6 +263,26 @@ export const Claim: FC = () => {
           ))}
         </div>
 
+        {/* Error display */}
+        {error && (
+          <div className="p-4 rounded-2xl bg-red-500/10 border border-red-500/20">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm text-red-400">{error}</p>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setError(null)}
+                  className="mt-2 text-red-400"
+                >
+                  Dismiss
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Step content */}
         <motion.div
           key={step}
@@ -120,33 +292,51 @@ export const Claim: FC = () => {
         >
           {step === 'select' && (
             <SelectPositionStep
-              onSelect={() => {
-                setStep('authorize')
-              }}
+              positions={claimablePositions}
+              onSelect={handleSelectPosition}
             />
           )}
-          {step === 'authorize' && (
+          {step === 'authorize' && selectedPosition && (
             <AuthorizeStep
-              amount={claimAmount}
-              setAmount={setClaimAmount}
-              onAuthorize={() => setStep('process')}
+              position={selectedPosition}
+              metaSpendPub={metaSpendPub!}
+              metaViewPub={metaViewPub!}
+              onAuthorize={(sig, authPda) => {
+                setTxSignature(sig)
+                setClaimAuthPda(authPda)
+                setStep('process')
+              }}
+              onError={setError}
               onBack={() => setStep('select')}
             />
           )}
-          {step === 'process' && (
+          {step === 'process' && selectedPosition && (
             <ProcessStep
-              onProcess={() => setStep('withdraw')}
+              position={selectedPosition}
+              txSignature={txSignature}
+              claimAuthPda={claimAuthPda}
+              onProcess={(id) => {
+                setJobId(id)
+                setStep('withdraw')
+              }}
+              onError={setError}
               onBack={() => setStep('authorize')}
             />
           )}
-          {step === 'withdraw' && (
+          {step === 'withdraw' && selectedPosition && (
             <WithdrawStep
+              position={selectedPosition}
+              jobId={jobId}
               onWithdraw={() => setStep('complete')}
+              onError={setError}
               onBack={() => setStep('process')}
             />
           )}
           {step === 'complete' && (
-            <CompleteStep onReset={() => setStep('select')} />
+            <CompleteStep
+              txSignature={txSignature}
+              onReset={handleReset}
+            />
           )}
         </motion.div>
       </div>
@@ -154,15 +344,16 @@ export const Claim: FC = () => {
   )
 }
 
-interface StepProps {
-  onBack?: () => void
+// =============================================================================
+// Step Components
+// =============================================================================
+
+interface SelectPositionStepProps {
+  positions: PositionWithStats[]
+  onSelect: (pos: PositionWithStats) => void
 }
 
-const SelectPositionStep: FC<{ onSelect: () => void }> = ({
-  onSelect,
-}) => {
-  const positions: { publicKey: string; positionId: number }[] = [] // Replace with actual data
-
+const SelectPositionStep: FC<SelectPositionStepProps> = ({ positions, onSelect }) => {
   return (
     <Card>
       <CardHeader>
@@ -185,17 +376,28 @@ const SelectPositionStep: FC<{ onSelect: () => void }> = ({
           <div className="space-y-3">
             {positions.map((pos) => (
               <button
-                key={pos.publicKey}
-                onClick={() => onSelect()}
+                key={pos.publicKey.toBase58()}
+                onClick={() => onSelect(pos)}
                 className="w-full p-4 rounded-lg bg-kage-elevated border border-kage-border-subtle hover:border-kage-accent-dim text-left transition-colors"
               >
                 <div className="flex justify-between items-center">
                   <div>
-                    <p className="font-medium text-kage-text">
-                      Position #{pos.positionId}
-                    </p>
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium text-kage-text">
+                        Position #{pos.account.positionId.toNumber()}
+                      </p>
+                      {pos.isCompressed && (
+                        <Badge variant="accent" className="text-xs">
+                          <Zap className="w-3 h-3 mr-1" />
+                          Compressed
+                        </Badge>
+                      )}
+                    </div>
                     <p className="text-sm text-kage-text-muted mt-1">
-                      Claimable: --- tokens
+                      {pos.stats.vestingProgress}% vested
+                    </p>
+                    <p className="text-xs text-kage-text-dim mt-1 font-mono">
+                      {formatAddress(pos.account.organization.toBase58(), 8)}
                     </p>
                   </div>
                   <ArrowRight className="w-5 h-5 text-kage-text-dim" />
@@ -209,21 +411,320 @@ const SelectPositionStep: FC<{ onSelect: () => void }> = ({
   )
 }
 
-const AuthorizeStep: FC<
-  StepProps & {
-    amount: string
-    setAmount: (v: string) => void
-    onAuthorize: () => void
-  }
-> = ({ amount, setAmount, onAuthorize, onBack }) => {
+interface AuthorizeStepProps {
+  position: SelectedPosition
+  metaSpendPub: string
+  metaViewPub: string
+  onAuthorize: (txSignature: string, claimAuthPda: string) => void
+  onError: (error: string) => void
+  onBack: () => void
+}
+
+const AuthorizeStep: FC<AuthorizeStepProps> = ({
+  position,
+  metaSpendPub: _metaSpendPub,
+  metaViewPub,
+  onAuthorize,
+  onError,
+  onBack,
+}) => {
+  // Note: metaSpendPub is passed for reference but the actual keys are retrieved from vault
+  void _metaSpendPub
+  const program = useProgram()
+  const {
+    keys: vaultKeys,
+    hasKeys: hasCachedKeys,
+    isLoading: vaultLoading,
+    error: vaultError,
+    status: vaultStatus,
+    retrieveKeys,
+  } = useVaultKeys()
+
   const [loading, setLoading] = useState(false)
+  const [status, setStatus] = useState<string>('')
 
   const handleAuthorize = async () => {
+    if (!program) {
+      onError('Program not initialized')
+      return
+    }
+
     setLoading(true)
-    // TODO: Implement Ed25519 signature for authorization
-    await new Promise((r) => setTimeout(r, 1500))
-    setLoading(false)
-    onAuthorize()
+    setStatus('Preparing claim authorization...')
+
+    try {
+      if (position.isCompressed) {
+        // ============================================
+        // COMPRESSED POSITION AUTHORIZATION
+        // ============================================
+
+        // Step 1: Get stealth keys (from cache or vault)
+        let stealthKeys = vaultKeys
+
+        if (!stealthKeys) {
+          setStatus('Retrieving stealth keys from vault...')
+
+          // Automatically trigger vault read flow
+          stealthKeys = await retrieveKeys()
+
+          if (!stealthKeys) {
+            throw new Error(
+              vaultError ||
+              'Failed to retrieve stealth keys from vault. Please ensure your vault is set up.'
+            )
+          }
+        }
+
+        // Step 2: Get ephemeral key and payload from backend
+        setStatus('Fetching stealth payment data...')
+
+        let ephemeralPubkey: string
+        let encryptedPayload: string
+
+        try {
+          ephemeralPubkey = await api.getStealthPaymentEphemeralKey({
+            organizationPubkey: position.organization.toBase58(),
+            positionId: position.positionId,
+          })
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 404) {
+            throw new Error(
+              'Ephemeral key not found. This position may have been created before the stealth system was set up. ' +
+              'Please contact the organization admin to recreate the position.'
+            )
+          }
+          throw err
+        }
+
+        try {
+          encryptedPayload = await api.getStealthPaymentPayload({
+            organizationPubkey: position.organization.toBase58(),
+            positionId: position.positionId,
+          })
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 404) {
+            throw new Error(
+              'Encrypted payload not found. This position was created before the privacy features were enabled. ' +
+              'Please contact the organization admin to recreate the position with full privacy support.'
+            )
+          }
+          throw err
+        }
+
+        // Step 3: Decrypt ephemeral private key
+        setStatus('Decrypting ephemeral key...')
+        const ephPriv32 = await decryptEphemeralPrivKey(
+          encryptedPayload,
+          stealthKeys.viewPrivKeyHex,
+          ephemeralPubkey
+        )
+
+        // Step 4: Derive stealth signing keypair
+        setStatus('Deriving stealth signer...')
+        const stealthSigner = await deriveStealthKeypair(
+          stealthKeys.spendPrivKeyHex,
+          metaViewPub,
+          ephPriv32
+        )
+
+        console.log('Stealth signer derived:', stealthSigner.publicKey.toBase58())
+
+        // Step 5: Create nullifier
+        const nullifier = createNullifier(stealthSigner.publicKey, position.positionId)
+
+        // Step 6: Initialize Light RPC and fetch compressed position
+        setStatus('Fetching compressed position...')
+        const lightRpc = createLightRpc(LIGHT_RPC_ENDPOINT)
+
+        const compressedAccount = await lightRpc.getCompressedAccount(
+          bn(position.publicKey.toBytes())
+        )
+        if (!compressedAccount) {
+          throw new Error('Compressed position not found on-chain')
+        }
+
+        // Step 7: Parse position data
+        const positionData = parseCompressedPositionData(
+          Buffer.from(compressedAccount.data!.data!)
+        )
+
+        // Step 8: Get organization data for token mint
+        const orgData = await fetchOrganization(program, position.organization)
+        if (!orgData) {
+          throw new Error('Organization not found')
+        }
+
+        // Step 9: Create destination token account
+        const tokenMint = orgData.tokenMint
+        const destinationAta = await getAssociatedTokenAddress(
+          tokenMint,
+          program.provider.publicKey!
+        )
+
+        // Step 10: Build claim message and sign with stealth key
+        setStatus('Signing authorization with stealth key...')
+        const positionIdBytes = Buffer.alloc(8)
+        positionIdBytes.writeBigUInt64LE(BigInt(position.positionId))
+        const message = Buffer.concat([
+          positionIdBytes,
+          Buffer.from(nullifier),
+          destinationAta.toBuffer(),
+        ])
+
+        const signature = await stealthSigner.signMessage(message)
+        console.log('Claim message signed with stealth key')
+
+        // Step 11: Create Ed25519 verify instruction
+        const ed25519Ix = Ed25519Program.createInstructionWithPublicKey({
+          publicKey: stealthSigner.publicKey.toBytes(),
+          message: Uint8Array.from(message),
+          signature: signature,
+        })
+
+        // Step 12: Get validity proof
+        setStatus('Getting validity proof...')
+        const proof = await lightRpc.getValidityProofV0(
+          [
+            {
+              hash: compressedAccount.hash,
+              tree: compressedAccount.treeInfo.tree,
+              queue: compressedAccount.treeInfo.queue,
+            },
+          ],
+          []
+        )
+
+        // Step 13: Build remaining accounts
+        const trees = defaultTestStateTreeAccounts()
+        const remainingAccounts = buildLightRemainingAccountsFromTrees(
+          [trees.merkleTree, trees.nullifierQueue],
+          PROGRAM_ID
+        )
+
+        // Step 14: Serialize proof and account meta
+        const proofBytes = serializeValidityProof(proof)
+        const accountMetaBytes = serializeCompressedAccountMeta(proof, position.publicKey)
+
+        // Step 15: Derive PDAs
+        const [claimAuthPda] = findClaimAuthorizationPda(
+          position.organization,
+          position.positionId,
+          nullifier
+        )
+        const [nullifierRecordPda] = findNullifierPda(
+          position.organization,
+          nullifier
+        )
+
+        // Step 16: Build authorize claim instruction
+        setStatus('Building authorization transaction...')
+        const computeIx = ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 })
+        const priorityFeeIx = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000 })
+
+        const authorizeIx = await program.methods
+          .authorizeClaimCompressed(
+            Buffer.from(proofBytes),
+            Buffer.from(accountMetaBytes),
+            positionData.owner,
+            positionData.organization,
+            positionData.schedule,
+            new BN(positionData.positionId),
+            Array.from(positionData.beneficiaryCommitment) as number[],
+            Array.from(positionData.encryptedTotalAmount) as number[],
+            Array.from(positionData.encryptedClaimedAmount) as number[],
+            new BN(positionData.nonce.toString()),
+            new BN(positionData.startTimestamp),
+            positionData.isActive,
+            positionData.isFullyClaimed,
+            Array.from(nullifier) as number[],
+            destinationAta
+          )
+          .accountsPartial({
+            claimAuthorization: claimAuthPda,
+            nullifierRecord: nullifierRecordPda,
+            organization: position.organization,
+            feePayer: program.provider.publicKey!,
+            instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
+            systemProgram: SystemProgram.programId,
+          })
+          .remainingAccounts(remainingAccounts)
+          .instruction()
+
+        // Step 17: Build and send versioned transaction
+        setStatus('Sending authorization transaction...')
+        const connection = program.provider.connection
+        const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash()
+
+        const messageV0 = new TransactionMessage({
+          payerKey: program.provider.publicKey!,
+          recentBlockhash: blockhash,
+          instructions: [computeIx, priorityFeeIx, ed25519Ix, authorizeIx],
+        }).compileToV0Message()
+
+        const versionedTx = new VersionedTransaction(messageV0)
+
+        // Sign with wallet
+        if (!program.provider.wallet) {
+          throw new Error('Wallet not connected')
+        }
+        const signedTx = await program.provider.wallet.signTransaction(versionedTx)
+
+        const txSig = await connection.sendTransaction(signedTx, {
+          skipPreflight: false,
+          preflightCommitment: 'confirmed',
+        })
+
+        await connection.confirmTransaction({
+          signature: txSig,
+          blockhash,
+          lastValidBlockHeight,
+        }, 'confirmed')
+
+        console.log('Claim authorized! Tx:', txSig)
+        onAuthorize(txSig, claimAuthPda.toBase58())
+
+      } else {
+        // ============================================
+        // REGULAR POSITION AUTHORIZATION
+        // ============================================
+        onError('Regular position claims not yet implemented. Use compressed positions.')
+      }
+    } catch (err) {
+      console.error('Authorization error:', err)
+      onError(err instanceof Error ? err.message : 'Authorization failed')
+    } finally {
+      setLoading(false)
+      setStatus('')
+    }
+  }
+
+  // Handler for manual stealth key input (for testing/development)
+  const handleManualKeyInput = () => {
+    const spendKey = prompt('Enter spend private key (hex):')
+    const viewKey = prompt('Enter view private key (hex):')
+    if (spendKey && viewKey && spendKey.length === 64 && viewKey.length === 64) {
+      cacheStealthKeys(spendKey, viewKey)
+      // Force re-check by refreshing the page state
+      window.location.reload()
+    } else if (spendKey || viewKey) {
+      onError('Invalid keys. Keys must be 64-character hex strings.')
+    }
+  }
+
+  // Get status message for vault retrieval
+  const getVaultStatusMessage = () => {
+    switch (vaultStatus) {
+      case 'checking-vault':
+        return 'Checking vault status...'
+      case 'reading-vault':
+        return 'Initiating vault read...'
+      case 'waiting-event':
+        return 'Waiting for MPC decryption (this may take a moment)...'
+      case 'decrypting':
+        return 'Decrypting keys...'
+      default:
+        return status
+    }
   }
 
   return (
@@ -237,15 +738,79 @@ const AuthorizeStep: FC<
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
-        <Input
-          label="Claim Amount"
-          type="number"
-          placeholder="0.00"
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-          hint="Enter the amount of tokens to claim"
-        />
+        {/* Position Info */}
+        <div className="p-4 rounded-lg bg-kage-elevated border border-kage-border-subtle">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-kage-text-muted">Position</p>
+              <p className="font-medium text-kage-text">#{position.positionId}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-sm text-kage-text-muted">Vested</p>
+              <p className="font-medium text-kage-accent">{position.vestingProgress}%</p>
+            </div>
+          </div>
+        </div>
 
+        {/* Stealth Keys Status */}
+        <div className={`p-4 rounded-lg border ${
+          hasCachedKeys
+            ? 'bg-green-500/10 border-green-500/20'
+            : vaultLoading
+              ? 'bg-kage-accent/10 border-kage-accent/20'
+              : 'bg-yellow-500/10 border-yellow-500/20'
+        }`}>
+          <div className="flex items-start gap-3">
+            {vaultLoading ? (
+              <Loader2 className="w-5 h-5 text-kage-accent animate-spin mt-0.5" />
+            ) : (
+              <Key className={`w-5 h-5 mt-0.5 ${hasCachedKeys ? 'text-green-400' : 'text-yellow-400'}`} />
+            )}
+            <div className="flex-1">
+              <p className={`text-sm font-medium ${
+                hasCachedKeys ? 'text-green-400' : vaultLoading ? 'text-kage-accent' : 'text-yellow-400'
+              }`}>
+                {hasCachedKeys
+                  ? 'Stealth Keys Ready'
+                  : vaultLoading
+                    ? 'Retrieving Keys from Vault'
+                    : 'Stealth Keys Required'}
+              </p>
+              <p className="text-xs text-kage-text-muted mt-1">
+                {hasCachedKeys
+                  ? 'Your stealth keys are cached and ready for signing.'
+                  : vaultLoading
+                    ? getVaultStatusMessage()
+                    : 'Keys will be automatically retrieved from Arcium vault when you proceed.'}
+              </p>
+              {!hasCachedKeys && !vaultLoading && (
+                <div className="flex gap-2 mt-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => retrieveKeys()}
+                    className="text-xs"
+                  >
+                    Retrieve Keys Now
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleManualKeyInput}
+                    className="text-xs text-kage-text-dim"
+                  >
+                    Manual Entry (Dev)
+                  </Button>
+                </div>
+              )}
+              {vaultError && (
+                <p className="text-xs text-red-400 mt-2">{vaultError}</p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Privacy Info */}
         <div className="p-4 rounded-lg bg-kage-subtle border border-kage-border-subtle">
           <div className="flex items-start gap-3">
             <Shield className="w-5 h-5 text-kage-accent mt-0.5" />
@@ -261,18 +826,27 @@ const AuthorizeStep: FC<
           </div>
         </div>
 
+        {/* Loading Status */}
+        {loading && status && !vaultLoading && (
+          <div className="p-4 rounded-lg bg-kage-accent/10 border border-kage-accent/20">
+            <div className="flex items-center gap-3">
+              <Loader2 className="w-5 h-5 text-kage-accent animate-spin" />
+              <p className="text-sm text-kage-accent">{status}</p>
+            </div>
+          </div>
+        )}
+
         <div className="flex gap-3">
-          <Button variant="ghost" onClick={onBack} className="flex-1">
+          <Button variant="ghost" onClick={onBack} disabled={loading || vaultLoading} className="flex-1">
             Back
           </Button>
           <Button
             variant="primary"
             onClick={handleAuthorize}
-            loading={loading}
-            disabled={!amount || Number(amount) <= 0}
+            loading={loading || vaultLoading}
             className="flex-1"
           >
-            Sign & Authorize
+            {loading || vaultLoading ? 'Processing...' : 'Sign & Authorize'}
           </Button>
         </div>
       </CardContent>
@@ -280,23 +854,70 @@ const AuthorizeStep: FC<
   )
 }
 
-const ProcessStep: FC<StepProps & { onProcess: () => void }> = ({
+interface ProcessStepProps {
+  position: SelectedPosition
+  txSignature: string | null
+  claimAuthPda: string | null
+  onProcess: (jobId: string) => void
+  onError: (error: string) => void
+  onBack: () => void
+}
+
+const ProcessStep: FC<ProcessStepProps> = ({
+  position,
+  txSignature,
+  claimAuthPda,
   onProcess,
+  onError,
   onBack,
 }) => {
   const [loading, setLoading] = useState(false)
-  const [status, setStatus] = useState<'idle' | 'proving' | 'verifying'>('idle')
+  const [status, setStatus] = useState<'idle' | 'queuing' | 'processing'>('idle')
 
   const handleProcess = async () => {
+    if (!claimAuthPda) {
+      onError('Claim authorization PDA not found. Please go back and authorize again.')
+      return
+    }
+
     setLoading(true)
-    setStatus('proving')
-    // TODO: Generate ZK proof
-    await new Promise((r) => setTimeout(r, 2000))
-    setStatus('verifying')
-    // TODO: Submit to MPC
-    await new Promise((r) => setTimeout(r, 1500))
-    setLoading(false)
-    onProcess()
+    setStatus('queuing')
+
+    try {
+      // TODO: This simplified claim UI is deprecated.
+      // Use the Positions page for full claim functionality.
+      // The Positions page has access to stealth keys, nullifiers, and destination accounts.
+      throw new Error(
+        'Please use the Positions page to claim tokens. ' +
+        'This simplified UI is being deprecated in favor of the full claim flow.'
+      )
+
+      // Legacy code (kept for reference):
+      // const result = await api.queueProcessClaim({
+      //   organizationPubkey: position.organization.toBase58(),
+      //   positionId: position.positionId,
+      //   claimAuthPda: claimAuthPda,
+      //   isCompressed: position.isCompressed,
+      //   nullifier: [], // Requires stealth key derivation
+      //   destinationTokenAccount: '', // Requires wallet connection
+      //   claimAmount: '0',
+      //   beneficiaryCommitment: [],
+      // })
+
+      setStatus('processing')
+
+      // In production, poll for completion
+      // For now, simulate processing time
+      await new Promise((r) => setTimeout(r, 2000))
+
+      onProcess(result.jobId)
+    } catch (err) {
+      console.error('Process error:', err)
+      onError(err instanceof Error ? err.message : 'Processing failed')
+    } finally {
+      setLoading(false)
+      setStatus('idle')
+    }
   }
 
   return (
@@ -306,7 +927,7 @@ const ProcessStep: FC<StepProps & { onProcess: () => void }> = ({
           Process Claim
         </h2>
         <p className="text-sm text-kage-text-muted">
-          Generate proof and submit to secure computation
+          Submit to Arcium MPC for secure computation
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -314,9 +935,9 @@ const ProcessStep: FC<StepProps & { onProcess: () => void }> = ({
           <div className="py-8 text-center">
             <Loader2 className="w-8 h-8 text-kage-accent mx-auto animate-spin" />
             <p className="text-kage-text mt-4">
-              {status === 'proving'
-                ? 'Generating zero-knowledge proof...'
-                : 'Submitting to MPC network...'}
+              {status === 'queuing'
+                ? 'Queuing MPC computation...'
+                : 'Processing claim securely...'}
             </p>
             <p className="text-sm text-kage-text-dim mt-1">
               This may take a moment
@@ -324,6 +945,20 @@ const ProcessStep: FC<StepProps & { onProcess: () => void }> = ({
           </div>
         ) : (
           <>
+            {txSignature && (
+              <div className="p-4 rounded-lg bg-green-500/10 border border-green-500/20">
+                <div className="flex items-center gap-2">
+                  <CheckCircle className="w-5 h-5 text-green-400" />
+                  <span className="text-sm font-medium text-green-400">
+                    Authorization confirmed
+                  </span>
+                </div>
+                <p className="text-xs text-kage-text-dim mt-2 font-mono">
+                  Tx: {txSignature.slice(0, 20)}...
+                </p>
+              </div>
+            )}
+
             <div className="space-y-3">
               <div className="p-4 rounded-lg bg-kage-elevated border border-kage-border-subtle">
                 <div className="flex items-center gap-3">
@@ -332,10 +967,10 @@ const ProcessStep: FC<StepProps & { onProcess: () => void }> = ({
                   </div>
                   <div>
                     <p className="text-sm font-medium text-kage-text">
-                      Generate ZK Proof
+                      Queue MPC Computation
                     </p>
                     <p className="text-xs text-kage-text-muted">
-                      Prove eligibility without revealing amounts
+                      Submit to Arcium network for processing
                     </p>
                   </div>
                 </div>
@@ -347,10 +982,10 @@ const ProcessStep: FC<StepProps & { onProcess: () => void }> = ({
                   </div>
                   <div>
                     <p className="text-sm font-medium text-kage-text">
-                      MPC Verification
+                      Verify & Authorize
                     </p>
                     <p className="text-xs text-kage-text-muted">
-                      Arcium network validates the claim securely
+                      MPC verifies claim and computes amount
                     </p>
                   </div>
                 </div>
@@ -372,18 +1007,35 @@ const ProcessStep: FC<StepProps & { onProcess: () => void }> = ({
   )
 }
 
-const WithdrawStep: FC<StepProps & { onWithdraw: () => void }> = ({
+interface WithdrawStepProps {
+  position: SelectedPosition
+  jobId: string | null
+  onWithdraw: () => void
+  onError: (error: string) => void
+  onBack: () => void
+}
+
+const WithdrawStep: FC<WithdrawStepProps> = ({
+  position,
+  jobId,
   onWithdraw,
+  onError,
   onBack,
 }) => {
   const [loading, setLoading] = useState(false)
 
   const handleWithdraw = async () => {
     setLoading(true)
-    // TODO: Execute withdrawal
-    await new Promise((r) => setTimeout(r, 1500))
-    setLoading(false)
-    onWithdraw()
+    try {
+      // TODO: Execute withdrawal transaction
+      await new Promise((r) => setTimeout(r, 1500))
+      onWithdraw()
+    } catch (err) {
+      console.error('Withdraw error:', err)
+      onError(err instanceof Error ? err.message : 'Withdrawal failed')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -411,12 +1063,16 @@ const WithdrawStep: FC<StepProps & { onWithdraw: () => void }> = ({
 
         <div className="space-y-2">
           <div className="flex justify-between text-sm">
-            <span className="text-kage-text-muted">Amount</span>
-            <span className="text-kage-text">--- tokens</span>
+            <span className="text-kage-text-muted">Position</span>
+            <span className="text-kage-text">#{position.positionId}</span>
           </div>
           <div className="flex justify-between text-sm">
-            <span className="text-kage-text-muted">Destination</span>
-            <span className="text-kage-text font-mono">Your wallet</span>
+            <span className="text-kage-text-muted">Job ID</span>
+            <span className="text-kage-text font-mono text-xs">{jobId?.slice(0, 20)}...</span>
+          </div>
+          <div className="flex justify-between text-sm">
+            <span className="text-kage-text-muted">Amount</span>
+            <span className="text-kage-text">Encrypted (revealed on withdrawal)</span>
           </div>
         </div>
 
@@ -439,7 +1095,12 @@ const WithdrawStep: FC<StepProps & { onWithdraw: () => void }> = ({
   )
 }
 
-const CompleteStep: FC<{ onReset: () => void }> = ({ onReset }) => {
+interface CompleteStepProps {
+  txSignature: string | null
+  onReset: () => void
+}
+
+const CompleteStep: FC<CompleteStepProps> = ({ txSignature, onReset }) => {
   return (
     <Card>
       <CardContent className="py-12 text-center">
@@ -457,6 +1118,11 @@ const CompleteStep: FC<{ onReset: () => void }> = ({ onReset }) => {
         <p className="text-kage-text-muted mt-2">
           Your tokens have been successfully withdrawn to your wallet
         </p>
+        {txSignature && (
+          <p className="text-xs text-kage-text-dim mt-4 font-mono">
+            Tx: {txSignature}
+          </p>
+        )}
         <Button variant="secondary" onClick={onReset} className="mt-8">
           Claim More Tokens
         </Button>

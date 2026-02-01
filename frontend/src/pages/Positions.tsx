@@ -1,14 +1,49 @@
 import type { FC } from 'react'
 import { useState, useRef, useLayoutEffect, useMemo, useCallback } from 'react'
-import { PublicKey } from '@solana/web3.js'
+import {
+  PublicKey,
+  Ed25519Program,
+  ComputeBudgetProgram,
+  TransactionMessage,
+  VersionedTransaction,
+  SystemProgram,
+  SYSVAR_INSTRUCTIONS_PUBKEY,
+  AddressLookupTableProgram,
+} from '@solana/web3.js'
+import { getAssociatedTokenAddress } from '@solana/spl-token'
 import gsap from 'gsap'
-import { Clock, Loader2, AlertCircle, CheckCircle2, X, Info, TrendingUp, Wallet } from 'lucide-react'
+import { Clock, Loader2, AlertCircle, X } from 'lucide-react'
 import { Card, CardContent, Button, Badge } from '@/components/ui'
 import { Layout } from '@/components/layout'
 import { formatAddress, formatTimestamp, formatDuration } from '@/lib/constants'
 import { useAuth } from '@/contexts/AuthContext'
-import { useEmployeePositions, type PositionWithStats } from '@/hooks'
+import { useMyPositions, useVaultKeys } from '@/hooks'
+import { useProgram } from '@/hooks/useProgram'
 import { api, type VestingProgressInfo } from '@/lib/api'
+import {
+  createLightRpc,
+  buildLightRemainingAccountsFromTrees,
+  serializeValidityProof,
+  serializeCompressedAccountMeta,
+  parseCompressedPositionData,
+  deriveCompressedPositionAddress,
+  BN,
+  bn,
+  findClaimAuthorizationPda,
+  findNullifierPda,
+  fetchOrganization,
+  PROGRAM_ID,
+} from '@/lib/sdk'
+import {
+  deriveStealthKeypair,
+  decryptEphemeralPrivKey,
+  createNullifier,
+} from '@/lib/stealth-address'
+import { cacheStealthKeys } from '@/lib/stealth-key-cache'
+import { defaultTestStateTreeAccounts } from '@lightprotocol/stateless.js'
+
+// Light Protocol RPC endpoint
+const LIGHT_RPC_ENDPOINT = import.meta.env.VITE_HELIUS_RPC_URL || 'https://devnet.helius-rpc.com/?api-key=YOUR_KEY'
 
 // =============================================================================
 // Types
@@ -16,45 +51,59 @@ import { api, type VestingProgressInfo } from '@/lib/api'
 
 type VestingStatus = 'cliff' | 'active' | 'vested' | 'completed'
 
+/**
+ * Position display data combining database info and derived status
+ * Uses MyPositionWithStats from useMyPositions hook as the source
+ */
 interface PositionDisplayData {
-  publicKey: PublicKey
+  // From database (via useMyPositions)
+  id: string
+  pubkey: string
   positionId: number
-  organization: PublicKey
+  organizationPubkey: string
+  tokenMint: string
+  scheduleIndex: number
+  stealthOwner: string
+  ephemeralPub: string
+  encryptedEphemeralPayload: string | null
+  isCompressed: boolean
   startTimestamp: number
-  isActive: boolean
-  vestingProgress: number
-  status: VestingStatus
   cliffEndTime: number
   vestingEndTime: number
+  vestingProgress: number
   isFullyVested: boolean
+  isActive: boolean
+  // Derived
+  status: VestingStatus
+  organization: PublicKey
+  publicKey: PublicKey
+  // On-chain data from Light Protocol
+  onChainData?: {
+    beneficiaryCommitment: string
+    compressedAddress: string
+    startTimestamp: number
+    isActive: boolean
+    isFullyClaimed: boolean
+  }
+  verificationStatus: 'verified' | 'mismatch' | 'not_found' | 'error' | 'pending'
 }
 
 // =============================================================================
 // Helper Functions
 // =============================================================================
 
-function getVestingStatus(
-  position: PositionWithStats,
-  currentTime: number
+/**
+ * Convert status string from API to VestingStatus
+ */
+function convertStatus(
+  apiStatus: 'cliff' | 'vesting' | 'vested',
+  isActive: boolean
 ): VestingStatus {
-  const { stats, account } = position
-
-  // If not active or fully claimed
-  if (!account.isActive) {
+  if (!isActive) {
     return 'completed'
   }
-
-  // If fully vested
-  if (stats.isFullyVested) {
-    return 'vested'
-  }
-
-  // If still in cliff period
-  if (currentTime < stats.cliffEndTime) {
-    return 'cliff'
-  }
-
-  // Actively vesting
+  if (apiStatus === 'cliff') return 'cliff'
+  if (apiStatus === 'vested') return 'vested'
   return 'active'
 }
 
@@ -92,29 +141,65 @@ export const Positions: FC = () => {
   const metaViewPub = user?.wallets[0]?.metaViewPub ?? null
   const hasStealthKeys = !!metaSpendPub && !!metaViewPub
 
-  // Fetch positions using employee's commitment
-  const { positions, loading, error, refresh } = useEmployeePositions(
-    metaSpendPub,
-    metaViewPub
-  )
+  // Vault keys for position discovery - auto-retrieve from Arcium vault
+  const {
+    hasKeys: hasVaultKeys,
+    isLoading: vaultKeysLoading,
+    error: vaultKeysError,
+    status: vaultKeysStatus,
+    retrieveKeys,
+  } = useVaultKeys()
+
+  // Auto-retrieve vault keys when page loads (needed for position ownership verification)
+  useLayoutEffect(() => {
+    if (hasStealthKeys && !hasVaultKeys && !vaultKeysLoading && vaultKeysStatus === 'idle') {
+      console.log('[Positions] Auto-retrieving vault keys for position discovery...')
+      retrieveKeys()
+    }
+  }, [hasStealthKeys, hasVaultKeys, vaultKeysLoading, vaultKeysStatus, retrieveKeys])
+
+  // Fetch positions from on-chain (Light Protocol + ownership verification)
+  // Only runs after vault keys are available for ownership verification
+  const { positions, loading, error, refresh, fetchOnChainData: _fetchOnChainData } = useMyPositions(metaSpendPub)
 
   // Transform positions for display
-  const currentTime = useMemo(() => Math.floor(Date.now() / 1000), [])
-
   const displayPositions: PositionDisplayData[] = useMemo(() => {
     return positions.map((pos) => ({
-      publicKey: pos.publicKey,
-      positionId: pos.account.positionId.toNumber(),
-      organization: pos.account.organization,
-      startTimestamp: pos.account.startTimestamp.toNumber(),
-      isActive: pos.account.isActive,
-      vestingProgress: pos.stats.vestingProgress,
-      status: getVestingStatus(pos, currentTime),
-      cliffEndTime: pos.stats.cliffEndTime,
-      vestingEndTime: pos.stats.vestingEndTime,
-      isFullyVested: pos.stats.isFullyVested,
+      // From database
+      id: pos.id,
+      pubkey: pos.pubkey,
+      positionId: pos.positionId,
+      organizationPubkey: pos.organizationPubkey,
+      tokenMint: pos.tokenMint,
+      scheduleIndex: pos.scheduleIndex,
+      stealthOwner: pos.stealthOwner,
+      ephemeralPub: pos.ephemeralPub,
+      encryptedEphemeralPayload: pos.encryptedEphemeralPayload,
+      isCompressed: pos.isCompressed,
+      startTimestamp: parseInt(pos.startTimestamp, 10),
+      cliffEndTime: pos.cliffEndTime,
+      vestingEndTime: pos.vestingEndTime,
+      vestingProgress: pos.vestingProgress,
+      isFullyVested: pos.isFullyVested,
+      isActive: pos.isActive,
+      // Derived
+      status: convertStatus(pos.status, pos.isActive),
+      organization: new PublicKey(pos.organizationPubkey),
+      publicKey: new PublicKey(pos.pubkey),
+      // On-chain data from Light Protocol
+      onChainData: pos.onChainData ? {
+        beneficiaryCommitment: pos.onChainData.beneficiaryCommitment,
+        compressedAddress: pos.onChainData.compressedAddress,
+        startTimestamp: pos.onChainData.startTimestamp,
+        isActive: pos.onChainData.isActive,
+        isFullyClaimed: pos.onChainData.isFullyClaimed,
+      } : undefined,
+      verificationStatus: pos.verificationStatus,
     }))
-  }, [positions, currentTime])
+  }, [positions])
+
+  // Current time for calculating remaining durations
+  const currentTime = useMemo(() => Math.floor(Date.now() / 1000), [])
 
   // Filter positions
   const filteredPositions = useMemo(() => {
@@ -150,12 +235,21 @@ export const Positions: FC = () => {
     return () => ctx.revert()
   }, [])
 
-  // Loading state
-  if (authLoading || loading) {
+  // Loading state - includes vault key retrieval
+  if (authLoading || loading || vaultKeysLoading) {
+    const statusMessage = vaultKeysLoading
+      ? vaultKeysStatus === 'checking-vault' ? 'Checking vault...'
+        : vaultKeysStatus === 'reading-vault' ? 'Reading keys from vault...'
+        : vaultKeysStatus === 'waiting-event' ? 'Waiting for MPC decryption...'
+        : vaultKeysStatus === 'decrypting' ? 'Decrypting stealth keys...'
+        : 'Loading positions...'
+      : 'Loading positions...'
+
     return (
       <Layout>
-        <div className="flex items-center justify-center min-h-[60vh]">
+        <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4">
           <Loader2 className="w-8 h-8 text-kage-accent animate-spin" />
+          <p className="text-kage-text-muted text-sm">{statusMessage}</p>
         </div>
       </Layout>
     )
@@ -201,6 +295,37 @@ export const Positions: FC = () => {
               <Button variant="primary" onClick={() => window.location.href = '/dashboard'}>
                 Go to Dashboard
               </Button>
+            </CardContent>
+          </Card>
+        </div>
+      </Layout>
+    )
+  }
+
+  // Vault key retrieval failed - show error with retry option
+  if (vaultKeysError && !hasVaultKeys) {
+    return (
+      <Layout>
+        <div ref={containerRef} className="space-y-6">
+          <Card>
+            <CardContent className="py-16 text-center">
+              <div className="w-16 h-16 rounded-2xl bg-red-500/10 mx-auto mb-6 flex items-center justify-center">
+                <AlertCircle className="w-8 h-8 text-red-400" />
+              </div>
+              <h3 className="text-xl font-semibold text-kage-text mb-2">
+                Failed to Retrieve Stealth Keys
+              </h3>
+              <p className="text-kage-text-muted max-w-md mx-auto mb-6">
+                {vaultKeysError}
+              </p>
+              <div className="flex gap-4 justify-center">
+                <Button variant="secondary" onClick={() => retrieveKeys()}>
+                  Retry
+                </Button>
+                <Button variant="primary" onClick={() => window.location.href = '/dashboard'}>
+                  Go to Dashboard
+                </Button>
+              </div>
             </CardContent>
           </Card>
         </div>
@@ -371,9 +496,11 @@ const PositionCard: FC<PositionCardProps> = ({ position, currentTime, onClaimCli
           <div className="flex items-center gap-3">
 
             <div>
-              <h3 className="font-medium text-kage-text">
-                Position #{position.positionId}
-              </h3>
+              <div className="flex items-center gap-2">
+                <h3 className="font-medium text-kage-text">
+                  Position #{position.positionId}
+                </h3>
+              </div>
               <p className="text-sm text-kage-text-muted font-mono">
                 {formatAddress(position.organization.toBase58(), 8)}
               </p>
@@ -445,7 +572,14 @@ const PositionCard: FC<PositionCardProps> = ({ position, currentTime, onClaimCli
         {/* Note about encrypted amounts */}
         <div className="p-3 rounded-xl bg-kage-subtle">
           <p className="text-xs text-kage-text-dim">
-            Token amounts are encrypted via Arcium MPC for privacy. Submit a claim to reveal your claimable amount.
+            {position.isCompressed ? (
+              <>
+                <span>Light Protocol compressed position.</span>{' '}
+                Token amounts are encrypted via Arcium MPC for privacy. Submit a claim to reveal your claimable amount.
+              </>
+            ) : (
+              'Token amounts are encrypted via Arcium MPC for privacy. Submit a claim to reveal your claimable amount.'
+            )}
           </p>
         </div>
 
@@ -475,10 +609,56 @@ interface ClaimModalProps {
 }
 
 const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
+  const { user } = useAuth()
+  const program = useProgram()
+  const {
+    keys: vaultKeys,
+    hasKeys: hasCachedKeys,
+    isLoading: vaultLoading,
+    error: vaultError,
+    status: vaultStatus,
+    retrieveKeys,
+  } = useVaultKeys()
+
   const [loading, setLoading] = useState(false)
+  const [claimStep, setClaimStep] = useState<'idle' | 'authorizing' | 'processing' | 'withdrawing' | 'success'>('idle')
   const [error, setError] = useState<string | null>(null)
   const [vestingInfo, setVestingInfo] = useState<VestingProgressInfo | null>(null)
   const [fetchingProgress, setFetchingProgress] = useState(true)
+  const [claimTxSignature, setClaimTxSignature] = useState<string | null>(null)
+
+  // Get stealth meta keys from user
+  const wallet = user?.wallets[0]
+  const metaSpendPub = wallet?.metaSpendPub
+  const metaViewPub = wallet?.metaViewPub
+
+  // Handler for manual stealth key input (for testing/development)
+  const handleManualKeyInput = () => {
+    const spendKey = prompt('Enter spend private key (hex):')
+    const viewKey = prompt('Enter view private key (hex):')
+    if (spendKey && viewKey && spendKey.length === 64 && viewKey.length === 64) {
+      cacheStealthKeys(spendKey, viewKey)
+      window.location.reload()
+    } else if (spendKey || viewKey) {
+      setError('Invalid keys. Keys must be 64-character hex strings.')
+    }
+  }
+
+  // Get status message for vault retrieval
+  const getVaultStatusMessage = () => {
+    switch (vaultStatus) {
+      case 'checking-vault':
+        return 'Checking vault...'
+      case 'reading-vault':
+        return 'Reading from vault...'
+      case 'waiting-event':
+        return 'Waiting for MPC decryption...'
+      case 'decrypting':
+        return 'Decrypting...'
+      default:
+        return 'Retrieving keys...'
+    }
+  }
 
   // Fetch live vesting progress from backend
   useLayoutEffect(() => {
@@ -488,11 +668,12 @@ const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
         const progress = await api.getVestingProgress({
           organizationPubkey: position.organization.toBase58(),
           positionId: position.positionId,
+          isCompressed: position.isCompressed,
         })
         setVestingInfo(progress)
       } catch (err) {
         console.error('Failed to fetch vesting progress:', err)
-        setError(err instanceof Error ? err.message : 'Failed to fetch vesting info')
+        // Don't show error for progress fetch - it's optional
       } finally {
         setFetchingProgress(false)
       }
@@ -502,24 +683,473 @@ const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
   }, [position])
 
   const handleClaim = async () => {
+    if (!program || !metaSpendPub || !metaViewPub) {
+      setError('Wallet not connected or stealth keys not found')
+      return
+    }
+
     setLoading(true)
     setError(null)
+    setClaimStep('authorizing')
 
     try {
-      // For MVP, show a message that full claim flow requires stealth key management
-      // In production, this would:
-      // 1. Generate nullifier
-      // 2. Sign message with stealth private key
-      // 3. Build Ed25519 verify instruction + authorize_claim instruction
-      // 4. Call queue_process_claim with MPC encryption
-      // 5. Wait for MPC callback
-      // 6. Call withdraw
+      if (position.isCompressed) {
+        // ============================================
+        // COMPRESSED POSITION CLAIM FLOW
+        // ============================================
+        console.log('Starting compressed position claim flow...')
 
-      setError('Claim functionality requires stealth key management. This feature will be available in the next release.')
+        // Step 1: Get stealth private keys (from cache or vault)
+        let cachedKeys = vaultKeys
+        if (!cachedKeys) {
+          console.log('Keys not cached, retrieving from vault...')
+          cachedKeys = await retrieveKeys()
+          if (!cachedKeys) {
+            throw new Error(
+              vaultError ||
+              'Failed to retrieve stealth keys from vault. Please ensure your vault is set up.'
+            )
+          }
+        }
+        const stealthKeysResponse = {
+          spendPrivKey: cachedKeys.spendPrivKeyHex,
+          viewPrivKey: cachedKeys.viewPrivKeyHex,
+        }
+
+        // Step 2: Initialize Light RPC and fetch compressed position
+        const lightRpc = createLightRpc(LIGHT_RPC_ENDPOINT)
+
+        // Derive the compressed position address from organization + positionId
+        // This ensures we use the same derivation as the contract
+        const { address: compressedPositionAddress } = deriveCompressedPositionAddress(
+          position.organization,
+          position.positionId,
+          PROGRAM_ID
+        )
+        console.log('Derived compressed position address:', compressedPositionAddress.toBase58())
+
+        // Fetch the compressed account using the derived address
+        const compressedAccount = await lightRpc.getCompressedAccount(
+          bn(compressedPositionAddress.toBytes())
+        )
+        if (!compressedAccount) {
+          throw new Error(
+            `Compressed position not found at ${compressedPositionAddress.toBase58()}. ` +
+            'The position may not be indexed yet. Please wait a few seconds and try again.'
+          )
+        }
+
+        console.log('Compressed account found:', {
+          hash: compressedAccount.hash.toString(),
+          dataLength: compressedAccount.data?.data?.length,
+          tree: compressedAccount.treeInfo.tree.toString(),
+          queue: compressedAccount.treeInfo.queue.toString(),
+        })
+
+        // Step 3: Parse position data
+        const positionData = parseCompressedPositionData(
+          Buffer.from(compressedAccount.data!.data!)
+        )
+        console.log('Parsed position data:', {
+          positionId: positionData.positionId,
+          startTimestamp: positionData.startTimestamp,
+          isActive: positionData.isActive,
+          isFullyClaimed: positionData.isFullyClaimed,
+        })
+
+        // Step 4: Get ephemeral pubkey from position data (already fetched from database)
+        // The database stores this when the position is created
+        const ephemeralPubkey = position.ephemeralPub
+        if (!ephemeralPubkey) {
+          throw new Error(
+            'Ephemeral key not found. This position may have been created before the stealth system was set up. ' +
+            'Please contact the organization admin to recreate the position.'
+          )
+        }
+
+        // Step 5: Get encrypted payload from position data
+        const encryptedPayload = position.encryptedEphemeralPayload
+        if (!encryptedPayload) {
+          throw new Error(
+            'Encrypted payload not found. This position was created before the privacy features were enabled. ' +
+            'Please contact the organization admin to recreate the position with full privacy support.'
+          )
+        }
+
+        console.log('Using stealth data from position:', {
+          ephemeralPubkey: ephemeralPubkey.slice(0, 20) + '...',
+          encryptedPayloadLength: encryptedPayload.length,
+        })
+
+        const ephPriv32 = await decryptEphemeralPrivKey(
+          encryptedPayload,
+          stealthKeysResponse.viewPrivKey,
+          ephemeralPubkey
+        )
+
+        // Step 6: Derive stealth signing keypair
+        const stealthSigner = await deriveStealthKeypair(
+          stealthKeysResponse.spendPrivKey,
+          metaViewPub,
+          ephPriv32
+        )
+
+        console.log('Stealth signer derived:', stealthSigner.publicKey.toBase58())
+
+        // Step 7: Create nullifier
+        const nullifier = createNullifier(stealthSigner.publicKey, position.positionId)
+
+        // Step 8: Create destination token account
+        const orgData = await fetchOrganization(program, position.organization)
+        if (!orgData) {
+          throw new Error('Organization not found')
+        }
+        const tokenMint = orgData.tokenMint
+        const destinationAta = await getAssociatedTokenAddress(
+          tokenMint,
+          program.provider.publicKey!
+        )
+
+        // Step 9: Build claim message and sign with stealth key
+        const positionIdBytes = Buffer.alloc(8)
+        positionIdBytes.writeBigUInt64LE(BigInt(position.positionId))
+        const message = Buffer.concat([
+          positionIdBytes,
+          Buffer.from(nullifier),
+          destinationAta.toBuffer(),
+        ])
+
+        const signature = await stealthSigner.signMessage(message)
+        console.log('Claim message signed with stealth key')
+
+        // Step 10: Create Ed25519 verify instruction
+        const pubkeyBytes = stealthSigner.publicKey.toBytes()
+        const messageBytes = new Uint8Array(message)
+        console.log('Ed25519 instruction params:', {
+          pubkeyLength: pubkeyBytes.length,
+          messageLength: messageBytes.length,
+          signatureLength: signature.length,
+          pubkeyFirst5: Array.from(pubkeyBytes.slice(0, 5)),
+          signatureFirst5: Array.from(signature.slice(0, 5)),
+        })
+
+        const ed25519Ix = Ed25519Program.createInstructionWithPublicKey({
+          publicKey: pubkeyBytes,
+          message: messageBytes,
+          signature: signature,
+        })
+
+        // Step 11: Get validity proof
+        const proof = await lightRpc.getValidityProofV0(
+          [
+            {
+              hash: compressedAccount.hash,
+              tree: compressedAccount.treeInfo.tree,
+              queue: compressedAccount.treeInfo.queue,
+            },
+          ],
+          []
+        )
+
+        // Step 12: Build remaining accounts
+        const trees = defaultTestStateTreeAccounts()
+        const remainingAccounts = buildLightRemainingAccountsFromTrees(
+          [trees.merkleTree, trees.nullifierQueue],
+          PROGRAM_ID
+        )
+
+        // Step 13: Serialize proof and account meta
+        const proofBytes = serializeValidityProof(proof)
+        // Use the derived compressed address, not the database pubkey
+        const accountMetaBytes = serializeCompressedAccountMeta(proof, compressedPositionAddress)
+
+        console.log('Authorize instruction data sizes:', {
+          proofBytesLength: proofBytes.length,
+          accountMetaBytesLength: accountMetaBytes.length,
+          beneficiaryCommitmentLength: positionData.beneficiaryCommitment?.length,
+          encryptedTotalAmountLength: positionData.encryptedTotalAmount?.length,
+          encryptedClaimedAmountLength: positionData.encryptedClaimedAmount?.length,
+          nullifierLength: nullifier.length,
+          positionDataKeys: Object.keys(positionData),
+        })
+
+        // Step 14: Derive PDAs
+        const [claimAuthPda] = findClaimAuthorizationPda(
+          position.organization,
+          position.positionId,
+          nullifier
+        )
+        const [nullifierRecordPda] = findNullifierPda(
+          position.organization,
+          nullifier
+        )
+
+        // Step 14.5: Check if ClaimAuthorization already exists
+        const connection = program.provider.connection
+        const existingClaimAuth = await connection.getAccountInfo(claimAuthPda)
+
+        if (existingClaimAuth) {
+          console.log('ClaimAuthorization already exists, checking status...')
+
+          // Try to fetch and check if already processed
+          let claimAuthAccount = null
+          try {
+            claimAuthAccount = await (program.account as any).claimAuthorization.fetch(claimAuthPda)
+          } catch (fetchErr) {
+            console.log('Could not decode ClaimAuthorization account, may be invalid:', fetchErr)
+            // Account exists but can't be decoded - this shouldn't happen normally
+            // We'll throw an error rather than trying to recreate
+            throw new Error(
+              'ClaimAuthorization account exists but cannot be read. ' +
+              'This may indicate a corrupted state. Please contact support.'
+            )
+          }
+
+          if (claimAuthAccount.isProcessed) {
+            // Claim was already fully processed
+            throw new Error(
+              'This position has already been claimed. The claim was processed successfully. ' +
+              'Check your wallet for the received tokens.'
+            )
+          }
+
+          // Authorization exists but not processed - queue claim processing
+          // Backend now creates scratch positions in its own service organization
+          console.log('ClaimAuthorization exists but not processed, queueing claim...')
+          setClaimStep('processing')
+
+          const scheduleIndex = 0 // Default to first schedule
+          const MAX_CLAIM_AMOUNT = '18446744073709551615'
+
+          // Queue claim processing - backend handles scratch position creation
+          const result = await api.queueProcessClaim({
+            organizationPubkey: position.organization.toBase58(),
+            positionId: position.positionId,
+            claimAuthPda: claimAuthPda.toBase58(),
+            isCompressed: true,
+            nullifier: Array.from(nullifier),
+            destinationTokenAccount: destinationAta.toBase58(),
+            claimAmount: MAX_CLAIM_AMOUNT,
+            beneficiaryCommitment: Array.from(positionData.beneficiaryCommitment),
+            scheduleIndex,
+          })
+
+          console.log('Claim processing result:', result)
+          if (result.error) {
+            throw new Error(result.error)
+          }
+          if (result.txSignatures?.length) {
+            console.log('Claim transactions:', result.txSignatures)
+          }
+
+          setClaimStep('success')
+          return // Exit early, claim flow completed
+        }
+
+        // Step 15: Build authorize claim instruction
+        const computeIx = ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 })
+        const priorityFeeIx = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1000 })
+
+        const authorizeIx = await program.methods
+          .authorizeClaimCompressed(
+            Buffer.from(proofBytes),
+            Buffer.from(accountMetaBytes),
+            positionData.owner,
+            positionData.organization,
+            positionData.schedule,
+            new BN(positionData.positionId),
+            Array.from(positionData.beneficiaryCommitment) as number[],
+            Array.from(positionData.encryptedTotalAmount) as number[],
+            Array.from(positionData.encryptedClaimedAmount) as number[],
+            new BN(positionData.nonce.toString()),
+            new BN(positionData.startTimestamp),
+            positionData.isActive,
+            positionData.isFullyClaimed,
+            Array.from(nullifier) as number[],
+            destinationAta
+          )
+          .accountsPartial({
+            claimAuthorization: claimAuthPda,
+            nullifierRecord: nullifierRecordPda,
+            organization: position.organization,
+            feePayer: program.provider.publicKey!,
+            instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
+            systemProgram: SystemProgram.programId,
+          })
+          .remainingAccounts(remainingAccounts)
+          .instruction()
+
+        // Step 16: Build versioned transaction with Address Lookup Table
+        const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash()
+
+        // Collect all addresses for ALT
+        const allAddresses = [
+          claimAuthPda,
+          nullifierRecordPda,
+          position.organization,
+          program.provider.publicKey!,
+          SYSVAR_INSTRUCTIONS_PUBKEY,
+          SystemProgram.programId,
+          ...remainingAccounts.map(a => a.pubkey),
+          PROGRAM_ID,
+          Ed25519Program.programId,
+          ComputeBudgetProgram.programId,
+        ]
+
+        // Try to find existing ALT or create one
+        let lookupTableAccount = null
+        try {
+          // Check if there's a stored ALT for this organization
+          const storedAltAddress = await api.getOrganizationALT(position.organization.toBase58())
+          if (storedAltAddress) {
+            const altAccountInfo = await connection.getAddressLookupTable(new PublicKey(storedAltAddress))
+            if (altAccountInfo.value) {
+              lookupTableAccount = altAccountInfo.value
+              console.log('Using existing ALT:', storedAltAddress)
+            }
+          }
+        } catch (err) {
+          console.log('No existing ALT found, will create one')
+        }
+
+        // If no ALT exists, create one
+        if (!lookupTableAccount) {
+          console.log('Creating Address Lookup Table...')
+          const recentSlot = await connection.getSlot('finalized')
+
+          const [createIx, lutAddress] = AddressLookupTableProgram.createLookupTable({
+            authority: program.provider.publicKey!,
+            payer: program.provider.publicKey!,
+            recentSlot,
+          })
+
+          const extendIx = AddressLookupTableProgram.extendLookupTable({
+            payer: program.provider.publicKey!,
+            authority: program.provider.publicKey!,
+            lookupTable: lutAddress,
+            addresses: allAddresses,
+          })
+
+          // Create ALT transaction
+          const altTx = new VersionedTransaction(
+            new TransactionMessage({
+              payerKey: program.provider.publicKey!,
+              recentBlockhash: blockhash,
+              instructions: [createIx, extendIx],
+            }).compileToV0Message()
+          )
+
+          if (!program.provider.wallet) {
+            throw new Error('Wallet not connected')
+          }
+          const signedAltTx = await program.provider.wallet.signTransaction(altTx)
+          const altTxSig = await connection.sendTransaction(signedAltTx, {
+            skipPreflight: false,
+          })
+
+          console.log('ALT creation tx:', altTxSig)
+          await connection.confirmTransaction({
+            signature: altTxSig,
+            blockhash,
+            lastValidBlockHeight,
+          }, 'confirmed')
+
+          // Wait for ALT activation (1-2 slots)
+          console.log('Waiting for ALT activation...')
+          await new Promise(resolve => setTimeout(resolve, 2000))
+
+          // Fetch the ALT account
+          const altAccountInfo = await connection.getAddressLookupTable(lutAddress)
+          if (!altAccountInfo.value) {
+            throw new Error('Failed to fetch lookup table')
+          }
+          lookupTableAccount = altAccountInfo.value
+          console.log('ALT created:', lutAddress.toBase58())
+
+          // Store ALT address in backend for future use
+          try {
+            await api.setOrganizationALT(position.organization.toBase58(), lutAddress.toBase58())
+          } catch (err) {
+            console.log('Could not store ALT address:', err)
+          }
+        }
+
+        // Build versioned transaction with ALT
+        const instructions = [computeIx, priorityFeeIx, ed25519Ix, authorizeIx]
+        const messageV0 = new TransactionMessage({
+          payerKey: program.provider.publicKey!,
+          recentBlockhash: blockhash,
+          instructions,
+        }).compileToV0Message([lookupTableAccount])
+
+        const versionedTx = new VersionedTransaction(messageV0)
+
+        console.log('Transaction details:', {
+          numInstructions: messageV0.compiledInstructions.length,
+          ed25519IxDataLength: ed25519Ix.data.length,
+          authorizeIxDataLength: authorizeIx.data.length,
+        })
+
+        // Sign with wallet
+        if (!program.provider.wallet) {
+          throw new Error('Wallet not connected')
+        }
+        const signedTx = await program.provider.wallet.signTransaction(versionedTx)
+
+        const txSig = await connection.sendTransaction(signedTx, {
+          skipPreflight: false,
+          preflightCommitment: 'confirmed',
+        })
+
+        await connection.confirmTransaction({
+          signature: txSig,
+          blockhash,
+          lastValidBlockHeight,
+        }, 'confirmed')
+
+        console.log('Claim authorized! Tx:', txSig)
+        setClaimTxSignature(txSig)
+        setClaimStep('processing')
+
+        // Step 17: Queue MPC process_claim
+        // Backend now creates scratch positions in its own service organization
+        const scheduleIndex = 0 // Default to first schedule
+        const MAX_CLAIM_AMOUNT = '18446744073709551615' // u64::MAX
+
+        console.log('Queueing claim processing (backend handles scratch position)...')
+        const result = await api.queueProcessClaim({
+          organizationPubkey: position.organization.toBase58(),
+          positionId: position.positionId,
+          claimAuthPda: claimAuthPda.toBase58(),
+          isCompressed: true,
+          nullifier: Array.from(nullifier),
+          destinationTokenAccount: destinationAta.toBase58(),
+          claimAmount: MAX_CLAIM_AMOUNT,
+          beneficiaryCommitment: Array.from(positionData.beneficiaryCommitment),
+          scheduleIndex,
+        })
+
+        console.log('Claim processing result:', result)
+        if (result.error) {
+          throw new Error(result.error)
+        }
+        if (result.txSignatures?.length) {
+          console.log('Claim transactions:', result.txSignatures)
+        }
+
+        setClaimStep('success')
+
+      } else {
+        // ============================================
+        // REGULAR POSITION CLAIM FLOW (legacy)
+        // ============================================
+        setError('Regular position claim not yet implemented. Please use compressed positions.')
+      }
 
     } catch (err) {
       console.error('Claim error:', err)
       setError(err instanceof Error ? err.message : 'Failed to process claim')
+      setClaimStep('idle')
     } finally {
       setLoading(false)
     }
@@ -628,17 +1258,6 @@ const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
                   </div>
                 )}
 
-                {!vestingInfo?.isInCliff && !vestingInfo?.isFullyVested && (
-                  <div className="col-span-2 p-4 rounded-xl bg-green-500/10 border border-green-500/20">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="text-xs text-green-400">Actively Vesting</span>
-                    </div>
-                    <p className="text-sm text-green-300">
-                      {vestingInfo ? formatDuration(vestingInfo.timeUntilFullyVested) : 'Calculating...'} until fully vested
-                    </p>
-                  </div>
-                )}
-
                 {vestingInfo?.isFullyVested && (
                   <div className="col-span-2 p-4 rounded-xl bg-kage-accent/10">
                     <div className="flex items-center gap-2 mb-2">
@@ -663,6 +1282,43 @@ const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
                 </div>
               </div>
 
+              {/* Claim Progress */}
+              {claimStep !== 'idle' && claimStep !== 'success' && (
+                <div className="p-4 rounded-xl bg-kage-accent/10 border border-kage-accent/20">
+                  <div className="flex items-center gap-3">
+                    <Loader2 className="w-5 h-5 text-kage-accent animate-spin" />
+                    <div>
+                      <p className="text-sm font-medium text-kage-accent">
+                        {claimStep === 'authorizing' && 'Authorizing claim...'}
+                        {claimStep === 'processing' && 'Processing MPC computation...'}
+                        {claimStep === 'withdrawing' && 'Withdrawing tokens...'}
+                      </p>
+                      {claimTxSignature && (
+                        <p className="text-xs text-kage-text-muted mt-1 font-mono">
+                          Tx: {claimTxSignature.slice(0, 20)}...
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Success State */}
+              {claimStep === 'success' && (
+                <div className="p-4 rounded-xl bg-kage-subtle">
+                  <div className="flex items-center gap-3">
+                    <div>
+                      <p className="text-sm font-medium text-kage-accent">
+                        Claim submitted successfully
+                      </p>
+                      <p className="text-xs text-kage-text-muted mt-1">
+                        Your tokens will be transferred after MPC verification.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Error Display */}
               {error && (
                 <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20">
@@ -684,24 +1340,18 @@ const ClaimModal: FC<ClaimModalProps> = ({ position, onClose }) => {
               className="flex-1"
               onClick={onClose}
             >
-              Cancel
+              {claimStep === 'success' ? 'Close' : 'Cancel'}
             </Button>
-            <Button
-              variant="primary"
-              className="flex-1"
-              onClick={handleClaim}
-              disabled={loading || position.status === 'cliff' || fetchingProgress}
-            >
-              {loading ? (
-                <>
-                  Processing...
-                </>
-              ) : (
-                <>
-                  Claim Tokens
-                </>
-              )}
-            </Button>
+            {claimStep !== 'success' && (
+              <Button
+                variant="primary"
+                className="flex-1"
+                onClick={handleClaim}
+                disabled={loading || vaultLoading || position.status === 'cliff' || fetchingProgress}
+              >
+                {loading || vaultLoading ? 'Processing...' : 'Claim Tokens'}
+              </Button>
+            )}
           </div>
         </div>
       </div>

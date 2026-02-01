@@ -16,9 +16,16 @@ import { formatAddress, formatDuration, formatAmount } from '@/lib/constants'
 import { useOrganization } from '@/hooks'
 import { EmployeeLookup } from '@/components/EmployeeLookup'
 import { api } from '@/lib/api'
-import { createPositionWithPreparedData, BN } from '@/lib/sdk'
+import {
+  BN,
+  createLightRpc,
+  createCompressedVestingPosition,
+} from '@/lib/sdk'
 import type { VestingSchedule } from '@/lib/sdk'
 import { useProgram } from '@/hooks'
+
+// Helius RPC endpoint for Light Protocol (devnet with compression support)
+const LIGHT_RPC_ENDPOINT = import.meta.env.VITE_HELIUS_RPC_URL || 'https://devnet.helius-rpc.com/?api-key=YOUR_KEY'
 
 // Schedule type from on-chain data
 interface OnChainSchedule {
@@ -489,16 +496,6 @@ const ManageSchedulesModal: FC<ManageSchedulesModalProps> = ({
     return parseInt(value || '0') * TIME_UNIT_MULTIPLIERS[unit]
   }
 
-  // Format seconds to readable string (compact)
-  const formatSeconds = (seconds: number): string => {
-    if (seconds === 0) return '0s'
-    if (seconds < 60) return `${seconds}s`
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`
-    if (seconds < 2592000) return `${Math.floor(seconds / 86400)}d`
-    return `${Math.floor(seconds / 2592000)}mo`
-  }
-
   // Format seconds to readable string (full)
   const formatSecondsFull = (seconds: number): string => {
     if (seconds === 0) return '0 seconds'
@@ -853,10 +850,12 @@ const ManagePositionsModal: FC<ManagePositionsModalProps> = ({
     setSuccess(null)
 
     try {
-      // Step 1: Call backend to prepare encrypted data (Arcium MPC encryption in Node.js)
       const amountInBaseUnits = Math.floor(parseFloat(amount) * 1e6).toString() // 6 decimals
 
-      console.log('Preparing position via backend relay...')
+      // Always use Light Protocol compressed positions (5000x cheaper, better privacy)
+      console.log('Creating compressed position via Light Protocol...')
+
+      // Get prepared data from backend (for Arcium encryption)
       const preparedData = await api.preparePositionOnChain({
         organizationPubkey: organization.toBase58(),
         scheduleIndex: selectedScheduleIndex,
@@ -864,16 +863,34 @@ const ManagePositionsModal: FC<ManagePositionsModalProps> = ({
         amount: amountInBaseUnits,
       })
 
-      console.log('Prepared data received:', preparedData)
+      // Initialize Light RPC
+      const lightRpc = createLightRpc(LIGHT_RPC_ENDPOINT)
 
-      // Step 2: Build and submit transaction using prepared encrypted data
-      const result = await createPositionWithPreparedData(
-        program,
-        organization,
-        preparedData
+      // Get schedule pubkey
+      const selectedSchedule = onChainSchedules.find(
+        s => s.account.scheduleId.toNumber() === selectedScheduleIndex
       )
+      if (!selectedSchedule) throw new Error('Schedule not found')
 
-      setSuccess(`Position created on-chain! Tx: ${result.signature.slice(0, 8)}... (Position ID: ${result.positionId})`)
+      // Create compressed position via Light Protocol
+      // Pass stealth params to emit StealthPaymentEvent for position discovery
+      const result = await createCompressedVestingPosition({
+        program,
+        lightRpc,
+        organization,
+        schedule: selectedSchedule.publicKey,
+        beneficiaryCommitment: new Uint8Array(preparedData.beneficiaryCommitment),
+        encryptedAmount: preparedData.encryptedAmount,
+        nonce: new BN(preparedData.nonce),
+        // Stealth params - triggers createCompressedStealthVestingPosition instruction
+        // which emits StealthPaymentEvent for position discovery on Positions page
+        stealthAddress: new PublicKey(preparedData.stealthAddress),
+        ephemeralPubkey: new PublicKey(preparedData.ephemeralPub).toBytes(),
+        encryptedPayload: new Uint8Array(preparedData.encryptedPayload),
+      })
+
+      setSuccess(`Position created! Tx: ${result.signature.slice(0, 8)}... (Position ID: ${result.positionId})`)
+
       setSelectedEmployee(null)
       setAmount('')
     } catch (err) {
@@ -911,8 +928,8 @@ const ManagePositionsModal: FC<ManagePositionsModalProps> = ({
 
             {/* Selected Employee */}
             {selectedEmployee && (
-              <div className="p-4 rounded-xl bg-green-500/10 border border-green-500/20">
-                <p className="text-sm text-green-400">
+              <div className="p-4 rounded-xl bg-kage-secondary/10">
+                <p className="text-sm text-kage-secondary">
                   Selected: <strong>{selectedEmployee.label || selectedEmployee.slug}</strong> (kage.ink/{selectedEmployee.slug})
                 </p>
               </div>
@@ -959,6 +976,17 @@ const ManagePositionsModal: FC<ManagePositionsModalProps> = ({
                   onChange={(e) => setAmount(e.target.value)}
                   hint="Enter the total vesting amount"
                 />
+
+                {/* Light Protocol Info */}
+                <div className="p-4 rounded-xl bg-kage-text/10">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-sm font-medium text-kage-accent">Light Protocol Compressed</span>
+                  </div>
+                  <p className="text-xs text-kage-text-dim">
+                    Position stored in Light Protocol Merkle tree for maximum privacy.{' '}
+                    <span className="text-kage-accent">~5000x cheaper</span> than regular accounts (~$0.00008 vs ~$0.40).
+                  </p>
+                </div>
 
                 {/* Create Button */}
                 <Button

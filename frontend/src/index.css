@@ -172,9 +172,13 @@ body {
   background: linear-gradient(135deg, #8758FF 0%, #6b45d6 100%) !important;
   border-radius: 9999px !important;
   padding: 0 !important;
-  margin: 0 !important;
+  margin-bottom: 12px !important;
   cursor: pointer !important;
   pointer-events: auto !important;
+}
+
+.wallet-adapter-modal-list li:last-child {
+  margin-bottom: 0 !important;
 }
 
 .wallet-adapter-modal-list li:hover {

@@ -30,7 +30,7 @@ export const EmployeeSetup: FC<EmployeeSetupProps> = ({ onComplete }) => {
   const { user, refreshUser } = useAuth()
   const { links, loading: linksLoading, refresh: refreshLinks } = useLinks()
   const { isAvailable, reason, loading: checkLoading, check } = useSlugAvailability()
-  const { storeMetaKeys, loading: vaultLoading, error: vaultError } = useMetaKeysVault()
+  const { storeMetaKeys } = useMetaKeysVault()
 
   const [slug, setSlug] = useState('')
   const [label, setLabel] = useState('')
@@ -63,6 +63,10 @@ export const EmployeeSetup: FC<EmployeeSetupProps> = ({ onComplete }) => {
       // Step 1: Generate stealth keys if not already registered
       if (!hasStealthKeys) {
         setSetupStep('generating')
+        console.log('=== EmployeeSetup: Generating Stealth Keys ===')
+        console.log('Wallet address:', wallet.address)
+        console.log('Wallet ID:', wallet.id)
+
         const spendKeypair = Keypair.generate()
         const viewKeypair = Keypair.generate()
 
@@ -73,15 +77,26 @@ export const EmployeeSetup: FC<EmployeeSetupProps> = ({ onComplete }) => {
         const spendPrivKeyHex = Buffer.from(spendKeypair.secretKey.slice(0, 32)).toString('hex')
         const viewPrivKeyHex = Buffer.from(viewKeypair.secretKey.slice(0, 32)).toString('hex')
 
+        console.log('Generated stealth keys:')
+        console.log('  metaSpendPub:', metaSpendPub)
+        console.log('  metaViewPub:', metaViewPub)
+        console.log('  spendPrivKeyHex (first 16 chars):', spendPrivKeyHex.slice(0, 16) + '...')
+        console.log('  viewPrivKeyHex (first 16 chars):', viewPrivKeyHex.slice(0, 16) + '...')
+
         // Register public keys with backend
+        console.log('Registering public keys with backend...')
         await api.registerStealthKeys(wallet.id, metaSpendPub, metaViewPub)
+        console.log('Public keys registered with backend!')
 
         // Store private keys in on-chain Arcium MPC vault
         // This encrypts the keys via MPC - only the owner can retrieve them
         setSetupStep('storing')
-        console.log('Storing stealth private keys in on-chain Arcium vault...')
-        await storeMetaKeys(spendPrivKeyHex, viewPrivKeyHex)
+        console.log('=== Storing Private Keys in Arcium Vault ===')
+        console.log('Calling storeMetaKeys...')
+        const storeResult = await storeMetaKeys(spendPrivKeyHex, viewPrivKeyHex)
+        console.log('storeMetaKeys returned:', storeResult)
         console.log('Stealth keys stored in vault successfully!')
+        console.log('=== End EmployeeSetup ===')
 
         // Refresh user to get updated wallet with keys
         await refreshUser()

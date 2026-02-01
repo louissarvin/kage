@@ -139,7 +139,7 @@ export function findClaimAuthorizationPda(
   positionIdBuffer.writeBigUInt64LE(BigInt(positionId))
   return PublicKey.findProgramAddressSync(
     [
-      Buffer.from('claim_authorization'),
+      Buffer.from('claim_auth'),
       organization.toBuffer(),
       positionIdBuffer,
       Buffer.from(nullifier),

@@ -125,6 +125,10 @@ export interface PreparePositionOnChainResponse {
     arciumProgram: string
   }
   programId: string
+  // Stealth address data (for StealthPaymentEvent emission)
+  stealthAddress: string
+  ephemeralPub: string
+  encryptedPayload: number[] // 128 bytes for on-chain StealthPaymentEvent
 }
 
 export interface VestingProgressInfo {
@@ -143,6 +147,32 @@ export interface VestingProgressInfo {
   startDate: string
   cliffEndDate: string
   vestingEndDate: string
+}
+
+export interface ApiMyPosition {
+  id: string
+  pubkey: string
+  positionId: number
+  organizationPubkey: string
+  tokenMint: string
+  scheduleIndex: number
+  schedulePubkey: string
+  stealthOwner: string
+  ephemeralPub: string
+  encryptedEphemeralPayload: string | null
+  isCompressed: boolean
+  startTimestamp: string
+  cliffEndTime: number
+  vestingEndTime: number
+  vestingProgress: number
+  status: 'cliff' | 'vesting' | 'vested'
+  isInCliff: boolean
+  isFullyVested: boolean
+  isActive: boolean
+  receivedVia: {
+    slug: string
+    label: string | null
+  } | null
 }
 
 export interface PrepareClaimResponse {
@@ -404,6 +434,7 @@ class ApiClient {
       data: PrepareVaultReadResponse
     }>('/api/stealth/prepare-vault-read', {
       method: 'POST',
+      body: JSON.stringify({}), // Empty body to avoid parsing issues
     })
     return data.data
   }
@@ -656,20 +687,6 @@ class ApiClient {
   // Vesting Progress & Claims
   // ---------------------------------------------------------------------------
 
-  async getVestingProgress(params: {
-    organizationPubkey: string
-    positionId: number
-  }): Promise<VestingProgressInfo> {
-    const data = await this.request<{
-      success: boolean
-      progress: VestingProgressInfo
-    }>('/api/organizations/vesting-progress', {
-      method: 'POST',
-      body: JSON.stringify(params),
-    })
-    return data.progress
-  }
-
   async prepareClaim(params: {
     organizationPubkey: string
     positionId: number
@@ -684,6 +701,180 @@ class ApiClient {
       body: JSON.stringify(params),
     })
     return data.data
+  }
+
+  // ---------------------------------------------------------------------------
+  // Compressed Position Claim Endpoints
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Get stealth private keys from Arcium MPC vault
+   * These are needed to derive the stealth signing keypair for claims
+   */
+  async getStealthKeys(): Promise<{
+    spendPrivKey: string
+    viewPrivKey: string
+  }> {
+    const data = await this.request<{
+      success: boolean
+      spendPrivKey: string
+      viewPrivKey: string
+    }>('/api/stealth/keys')
+    return {
+      spendPrivKey: data.spendPrivKey,
+      viewPrivKey: data.viewPrivKey,
+    }
+  }
+
+  /**
+   * Get ephemeral public key for a stealth payment (position)
+   * This is the R value stored during position creation
+   */
+  async getStealthPaymentEphemeralKey(params: {
+    organizationPubkey: string
+    positionId: number
+  }): Promise<string> {
+    const data = await this.request<{
+      success: boolean
+      ephemeralPubkey: string
+    }>(`/api/stealth/payment/${params.organizationPubkey}/${params.positionId}/ephemeral-key`)
+    return data.ephemeralPubkey
+  }
+
+  /**
+   * Get encrypted payload for a stealth payment
+   * This contains the encrypted ephemeral private key
+   */
+  async getStealthPaymentPayload(params: {
+    organizationPubkey: string
+    positionId: number
+  }): Promise<string> {
+    const data = await this.request<{
+      success: boolean
+      encryptedPayload: string
+    }>(`/api/stealth/payment/${params.organizationPubkey}/${params.positionId}/payload`)
+    return data.encryptedPayload
+  }
+
+  /**
+   * Queue MPC process_claim computation
+   * This triggers the backend to run the full Arcium MPC claim flow:
+   * 1. Create scratch position
+   * 2. Queue process_claim_v2
+   * 3. Update compressed position
+   * 4. Withdraw tokens
+   */
+  /**
+   * Prepare scratch position data for frontend to create
+   * The frontend must create the scratch position because:
+   * - createVestingPosition requires admin signature
+   * - User's wallet is the org admin, not the backend service
+   */
+  async prepareScratchPosition(params: {
+    organizationPubkey: string
+    scheduleIndex: number
+    beneficiaryCommitment: number[] // 32-byte array
+  }): Promise<PreparePositionOnChainResponse> {
+    const data = await this.request<{
+      success: boolean
+      data: PreparePositionOnChainResponse
+    }>('/api/organizations/claims/prepare-scratch', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    })
+    return data.data
+  }
+
+  async queueProcessClaim(params: {
+    organizationPubkey: string
+    positionId: number
+    claimAuthPda: string
+    isCompressed: boolean
+    nullifier: number[] // 32-byte array
+    destinationTokenAccount: string
+    claimAmount: string
+    beneficiaryCommitment: number[] // 32-byte commitment for scratch position
+    scheduleIndex?: number
+  }): Promise<{
+    jobId: string
+    status: string
+    claimAmount?: string
+    txSignatures?: string[]
+    error?: string
+  }> {
+    const data = await this.request<{
+      success: boolean
+      jobId: string
+      status: string
+      claimAmount?: string
+      txSignatures?: string[]
+      error?: string
+    }>('/api/organizations/claims/queue-process', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    })
+    return {
+      jobId: data.jobId,
+      status: data.status,
+      claimAmount: data.claimAmount,
+      txSignatures: data.txSignatures,
+      error: data.error,
+    }
+  }
+
+  /**
+   * Get vesting progress for a position (supports both regular and compressed)
+   */
+  async getVestingProgress(params: {
+    organizationPubkey: string
+    positionId: number
+    isCompressed?: boolean
+  }): Promise<VestingProgressInfo> {
+    const data = await this.request<{
+      success: boolean
+      progress: VestingProgressInfo
+    }>('/api/organizations/vesting-progress', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    })
+    return data.progress
+  }
+
+  /**
+   * Get Address Lookup Table for an organization
+   */
+  async getOrganizationALT(organizationPubkey: string): Promise<string | null> {
+    try {
+      const data = await this.request<{
+        success: boolean
+        altAddress: string | null
+      }>(`/api/organizations/${organizationPubkey}/alt`)
+      return data.altAddress
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Set Address Lookup Table for an organization
+   */
+  async setOrganizationALT(organizationPubkey: string, altAddress: string): Promise<void> {
+    await this.request<{ success: boolean }>(`/api/organizations/${organizationPubkey}/alt`, {
+      method: 'POST',
+      body: JSON.stringify({ altAddress }),
+    })
+  }
+
+  /**
+   * Get all positions owned by the authenticated user
+   * Uses database ownership (via links) rather than on-chain commitment scanning
+   */
+  async getMyPositions(): Promise<ApiMyPosition[]> {
+    const data = await this.request<{
+      success: boolean
+      positions: ApiMyPosition[]
+    }>('/api/organizations/my-positions')
+    return data.positions
   }
 }
 

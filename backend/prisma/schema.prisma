@@ -116,6 +116,9 @@ model Organization {
   scheduleCount Int @default(0)
   positionCount Int @default(0)
 
+  // Address Lookup Table for claim transactions
+  altAddress String?
+
   // Schedules and positions
   schedules VestingSchedule[]
   positions VestingPosition[]
@@ -169,9 +172,19 @@ model VestingPosition {
   scheduleId     String
   schedule       VestingSchedule @relation(fields: [scheduleId], references: [id])
 
+  // Position ID on-chain
+  positionId Int @default(0)
+
   // Stealth ownership
   stealthOwner String // Stealth public key (on-chain)
   ephemeralPub String // For deriving stealth keypair
+
+  // Encrypted ephemeral private key payload (for employee to decrypt)
+  // Base64-encoded encrypted payload: nonce (24 bytes) + encrypted ephemeralPriv (32 bytes)
+  encryptedEphemeralPayload String?
+
+  // Light Protocol compression flag
+  isCompressed Boolean @default(false)
 
   // Ownership resolution (set after scanning)
   ownerLinkId   String? // Which link this position belongs to
@@ -192,6 +205,7 @@ model VestingPosition {
   @@index([organizationId])
   @@index([stealthOwner])
   @@index([ownerWalletId])
+  @@index([organizationId, positionId])
   @@map("vesting_positions")
 }
 

@@ -357,4 +357,199 @@ export async function stealthRoutes(app: FastifyInstance) {
       })
     }
   })
+
+  // =============================================================================
+  // Stealth Payment Data (for claim flow)
+  // =============================================================================
+
+  /**
+   * GET /api/stealth/keys
+   * Get stealth private keys - requires prior vault read and decrypt
+   *
+   * NOTE: This is a convenience endpoint that returns cached keys if available.
+   * The full flow to retrieve keys from Arcium MPC is:
+   * 1. Call /prepare-vault-read
+   * 2. Build and sign read_meta_keys transaction
+   * 3. Listen for MetaKeysRetrieved event
+   * 4. Call /decrypt-vault-event with event data
+   *
+   * For the claim flow, the frontend should complete this flow first,
+   * then cache the keys locally for the session.
+   */
+  app.get('/keys', { preHandler: [app.authenticate] }, async (request, reply) => {
+    try {
+      // This endpoint indicates to the frontend that it needs to complete
+      // the vault read flow to get the private keys
+      return reply.status(400).send({
+        success: false,
+        error: 'Stealth private keys must be retrieved from Arcium MPC vault',
+        hint: 'Use /prepare-vault-read to start the vault read flow, then decrypt the event data',
+        steps: [
+          '1. POST /api/stealth/prepare-vault-read - Get session key and accounts',
+          '2. Build and sign read_meta_keys transaction on frontend',
+          '3. Listen for MetaKeysRetrieved event',
+          '4. POST /api/stealth/decrypt-vault-event - Decrypt the keys',
+        ],
+      })
+    } catch (error) {
+      console.error('Get stealth keys error:', error)
+      return reply.status(500).send({
+        success: false,
+        error: 'Failed to get stealth keys',
+      })
+    }
+  })
+
+  /**
+   * GET /api/stealth/payment/:orgPubkey/:positionId/ephemeral-key
+   * Get ephemeral public key for a stealth payment (position)
+   * This is the R value stored during position creation
+   */
+  app.get('/payment/:orgPubkey/:positionId/ephemeral-key', { preHandler: [app.authenticate] }, async (request, reply) => {
+    try {
+      const params = request.params as { orgPubkey: string; positionId: string }
+      const positionId = parseInt(params.positionId, 10)
+
+      console.log('=== Get Ephemeral Key ===')
+      console.log('  Org Pubkey:', params.orgPubkey)
+      console.log('  Position ID:', positionId)
+
+      if (isNaN(positionId)) {
+        return reply.status(400).send({
+          success: false,
+          error: 'Invalid position ID',
+        })
+      }
+
+      // Find the organization
+      const organization = await prisma.organization.findUnique({
+        where: { pubkey: params.orgPubkey },
+      })
+
+      console.log('  Organization found:', !!organization)
+
+      if (!organization) {
+        return reply.status(404).send({
+          success: false,
+          error: 'Organization not found',
+        })
+      }
+
+      // Find the position
+      const position = await prisma.vestingPosition.findFirst({
+        where: {
+          organizationId: organization.id,
+          positionId: positionId,
+        },
+      })
+
+      console.log('  Position found:', !!position)
+      if (position) {
+        console.log('    Position DB ID:', position.id)
+        console.log('    Position positionId:', position.positionId)
+        console.log('    Has ephemeralPub:', !!position.ephemeralPub)
+        console.log('    ephemeralPub value:', position.ephemeralPub?.slice(0, 20) + '...')
+      }
+
+      if (!position) {
+        // Try to find any positions for this org to debug
+        const allPositions = await prisma.vestingPosition.findMany({
+          where: { organizationId: organization.id },
+          select: { id: true, positionId: true, ephemeralPub: true },
+        })
+        console.log('  All positions for org:', allPositions.map(p => ({
+          id: p.id,
+          positionId: p.positionId,
+          hasEphemeralPub: !!p.ephemeralPub,
+        })))
+
+        return reply.status(404).send({
+          success: false,
+          error: 'Position not found',
+        })
+      }
+
+      if (!position.ephemeralPub) {
+        return reply.status(404).send({
+          success: false,
+          error: 'Ephemeral public key not found for this position',
+        })
+      }
+
+      return reply.send({
+        success: true,
+        ephemeralPubkey: position.ephemeralPub,
+      })
+    } catch (error) {
+      console.error('Get ephemeral key error:', error)
+      return reply.status(500).send({
+        success: false,
+        error: 'Failed to get ephemeral key',
+      })
+    }
+  })
+
+  /**
+   * GET /api/stealth/payment/:orgPubkey/:positionId/payload
+   * Get encrypted payload for a stealth payment
+   * This contains the encrypted ephemeral private key that the employee decrypts
+   */
+  app.get('/payment/:orgPubkey/:positionId/payload', { preHandler: [app.authenticate] }, async (request, reply) => {
+    try {
+      const params = request.params as { orgPubkey: string; positionId: string }
+      const positionId = parseInt(params.positionId, 10)
+
+      if (isNaN(positionId)) {
+        return reply.status(400).send({
+          success: false,
+          error: 'Invalid position ID',
+        })
+      }
+
+      // Find the organization
+      const organization = await prisma.organization.findUnique({
+        where: { pubkey: params.orgPubkey },
+      })
+
+      if (!organization) {
+        return reply.status(404).send({
+          success: false,
+          error: 'Organization not found',
+        })
+      }
+
+      // Find the position
+      const position = await prisma.vestingPosition.findFirst({
+        where: {
+          organizationId: organization.id,
+          positionId: positionId,
+        },
+      })
+
+      if (!position) {
+        return reply.status(404).send({
+          success: false,
+          error: 'Position not found',
+        })
+      }
+
+      if (!position.encryptedEphemeralPayload) {
+        return reply.status(404).send({
+          success: false,
+          error: 'Encrypted payload not found for this position',
+        })
+      }
+
+      return reply.send({
+        success: true,
+        encryptedPayload: position.encryptedEphemeralPayload,
+      })
+    } catch (error) {
+      console.error('Get encrypted payload error:', error)
+      return reply.status(500).send({
+        success: false,
+        error: 'Failed to get encrypted payload',
+      })
+    }
+  })
 }

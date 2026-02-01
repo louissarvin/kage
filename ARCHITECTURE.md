@@ -2070,7 +2070,352 @@ kage/
 
 ---
 
-## 10. Sources & References
+## 10. Production Roadmap: Streaming Payroll (Multiple Claims)
+
+### 10.1 Current MVP vs Production
+
+The current MVP implementation supports **one-time claiming** per position. For production streaming payroll, users need to claim **multiple times** as tokens vest over time.
+
+| Feature | MVP (Current) | Production (Streaming) |
+|---------|---------------|------------------------|
+| Claims per position | 1 (claim all at once) | Multiple (partial claims) |
+| User behavior | Wait until 100% vested | Claim as tokens vest |
+| Nullifier | Fixed per position | Unique per claim |
+| UI state | "Claimed" vs "Not Claimed" | "X of Y tokens claimed" |
+
+### 10.2 Vesting Flow Example
+
+```
+Total Vesting: 100 tokens over 12 months
+
+Month 1:  8 tokens vested  → User claims 8   → 92 remaining
+Month 3:  25 tokens vested → User claims 17  → 75 remaining
+Month 6:  50 tokens vested → User claims 25  → 50 remaining
+Month 12: 100 tokens vested → User claims 50 → 0 remaining ✅ Fully Claimed
+```
+
+### 10.3 Smart Contract Changes
+
+#### A. Nullifier Generation
+
+**Current (MVP):**
+```rust
+// Fixed per position - only allows ONE claim
+nullifier = hash(stealth_pubkey, position_id)
+```
+
+**Production:**
+```rust
+// Unique per claim attempt - allows multiple claims
+nullifier = hash(stealth_pubkey, position_id, claim_nonce)
+// OR
+nullifier = hash(stealth_pubkey, position_id, claimed_amount_before, claim_amount)
+```
+
+#### B. ClaimAuthorization Account
+
+**Current:**
+```rust
+pub struct ClaimAuthorization {
+    pub organization: Pubkey,
+    pub position_id: u64,
+    pub nullifier: [u8; 32],
+    pub destination: Pubkey,
+    pub claim_amount: u64,
+    pub is_processed: bool,
+}
+```
+
+**Production:**
+```rust
+pub struct ClaimAuthorization {
+    pub organization: Pubkey,
+    pub position_id: u64,
+    pub nullifier: [u8; 32],
+    pub destination: Pubkey,
+    pub claim_amount: u64,
+    pub cumulative_claimed: u64,  // NEW: Total claimed so far
+    pub claim_index: u32,         // NEW: Which claim (1st, 2nd, 3rd...)
+    pub is_processed: bool,
+    pub timestamp: i64,           // NEW: When claimed
+}
+```
+
+#### C. Validation Logic
+
+**Production:**
+```rust
+// Check nullifier not used (but allow new nullifiers for same position)
+require!(nullifier_record.is_none(), "This specific claim already processed");
+
+// Check claim amount doesn't exceed available
+let available = vested_amount - already_claimed;
+require!(claim_amount <= available, "Exceeds available amount");
+```
+
+#### D. New Instruction: `get_claimable_amount`
+
+```rust
+// MPC computation to return how much user can currently claim
+pub fn get_claimable_amount(
+    position_id: u64,
+    encrypted_total: [u8; 32],
+    encrypted_claimed: [u8; 32],
+    current_timestamp: i64,
+) -> Result<u64> {
+    // MPC decrypts and calculates:
+    // vested = total * vesting_progress
+    // claimable = vested - already_claimed
+    return claimable;
+}
+```
+
+### 10.4 Backend Changes
+
+#### A. Database Schema
+
+**New Table: `claim_history`**
+```sql
+CREATE TABLE claim_history (
+    id UUID PRIMARY KEY,
+    position_id VARCHAR NOT NULL,
+    organization_pubkey VARCHAR NOT NULL,
+    wallet_address VARCHAR NOT NULL,
+
+    claim_index INTEGER NOT NULL,        -- 1, 2, 3...
+    claim_amount BIGINT NOT NULL,        -- This claim
+    cumulative_claimed BIGINT NOT NULL,  -- Total after this claim
+
+    nullifier VARCHAR NOT NULL UNIQUE,
+    claim_auth_pda VARCHAR NOT NULL,
+
+    tx_signature VARCHAR,
+    status VARCHAR NOT NULL,             -- 'pending', 'processing', 'completed', 'failed'
+
+    created_at TIMESTAMP DEFAULT NOW(),
+    completed_at TIMESTAMP
+);
+```
+
+**Update: `vesting_positions` table**
+```sql
+ALTER TABLE vesting_positions ADD COLUMN
+    total_claimed BIGINT DEFAULT 0,
+    last_claim_at TIMESTAMP,
+    claim_count INTEGER DEFAULT 0,
+    is_fully_claimed BOOLEAN DEFAULT FALSE;
+```
+
+#### B. New API Endpoints
+
+```typescript
+// Get claimable amount for a position
+GET /api/positions/:id/claimable
+Response: {
+    totalAmount: "100000000",
+    vestedAmount: "50000000",
+    claimedAmount: "25000000",
+    claimableNow: "25000000",
+    vestingProgress: 50,
+    nextVestingAt: "2026-03-01T00:00:00Z"
+}
+
+// Get claim history for a position
+GET /api/positions/:id/claims
+Response: {
+    claims: [
+        { index: 1, amount: "10000000", timestamp: "...", txSignature: "..." },
+        { index: 2, amount: "15000000", timestamp: "...", txSignature: "..." },
+    ],
+    totalClaimed: "25000000"
+}
+
+// Submit partial claim
+POST /api/positions/:id/claim
+Body: {
+    claimAmount: "10000000",  // Specific amount, not "max"
+    claimNonce: 2             // For nullifier uniqueness
+}
+```
+
+### 10.5 Frontend Changes
+
+#### A. Position Card UI
+
+**Current:**
+```
+Position #11
+Status: Fully Vested
+Progress: 100%
+[Claim Tokens]
+```
+
+**Production:**
+```
+Position #11
+Total: 100 tokens
+├── Vested: 75 tokens (75%)
+├── Claimed: 25 tokens
+└── Available: 50 tokens
+
+Progress: [████████░░] 75% vested
+Claimed:  [██░░░░░░░░] 25% claimed
+
+[Claim 50 Tokens]  or  [Claim Custom Amount]
+```
+
+#### B. Claim Modal (Production)
+
+```
+┌─────────────────────────────────────┐
+│  Claim from Position #11            │
+│                                     │
+│  Available to claim: 50 tokens      │
+│                                     │
+│  Amount: [___________] tokens       │
+│          ○ Claim all (50)           │
+│          ○ Custom amount            │
+│                                     │
+│  Claim History:                     │
+│  • Feb 1: Claimed 15 tokens         │
+│  • Jan 15: Claimed 10 tokens        │
+│                                     │
+│  [Cancel]  [Claim]                  │
+└─────────────────────────────────────┘
+```
+
+#### C. Position Status Logic
+
+```typescript
+function getPositionStatus(position) {
+    if (position.isFullyClaimed) return 'completed';
+    if (position.claimableNow > 0) return 'claimable';
+    if (position.isInCliff) return 'cliff';
+    if (position.vestedAmount > position.claimedAmount) return 'vesting';
+    return 'waiting'; // Vested = Claimed, waiting for more to vest
+}
+```
+
+### 10.6 Nullifier Strategy Options
+
+#### Option A: Claim Counter (Recommended)
+
+```typescript
+nullifier = hash(stealthPubkey, positionId, claimIndex)
+// Claim 1: hash(key, 11, 0)
+// Claim 2: hash(key, 11, 1)
+// Claim 3: hash(key, 11, 2)
+```
+
+| Pros | Cons |
+|------|------|
+| Simple, predictable | Need to track claim count |
+| Easy to verify | Sequential claims required |
+| Clear audit trail | |
+
+#### Option B: Timestamp-based
+
+```typescript
+nullifier = hash(stealthPubkey, positionId, timestamp)
+```
+
+| Pros | Cons |
+|------|------|
+| No counter needed | Timestamp manipulation risk |
+| Flexible timing | Harder to audit |
+
+#### Option C: Amount-based
+
+```typescript
+nullifier = hash(stealthPubkey, positionId, previousClaimed, claimAmount)
+```
+
+| Pros | Cons |
+|------|------|
+| Self-documenting | Complex verification |
+| Prevents double-claim | Edge cases with same amounts |
+
+**Recommendation: Option A (Claim Counter)** - Simple, predictable, and easy to audit.
+
+### 10.7 MPC Computation Changes
+
+#### Current MPC: `process_claim_v2`
+
+```
+Input: encrypted_total, encrypted_claimed, claim_amount
+Output: approved_amount (capped at vested - claimed)
+```
+
+#### Production MPC: `process_partial_claim`
+
+```
+Input:
+  - encrypted_total_amount
+  - encrypted_claimed_so_far
+  - requested_claim_amount
+  - vesting_schedule_params
+  - current_timestamp
+
+Output:
+  - approved_claim_amount
+  - new_encrypted_claimed_amount (claimed_so_far + approved)
+  - is_fully_claimed (boolean)
+
+Computation:
+  1. Decrypt total and claimed
+  2. Calculate vested based on schedule
+  3. available = vested - claimed
+  4. approved = min(requested, available)
+  5. new_claimed = claimed + approved
+  6. Encrypt new_claimed
+  7. Return results
+```
+
+### 10.8 Security Considerations
+
+| Risk | Mitigation |
+|------|------------|
+| Double-claim same nullifier | Contract checks nullifier uniqueness |
+| Claim more than vested | MPC validates against schedule |
+| Front-running claims | Nullifier tied to stealth key (only owner can create) |
+| Replay attacks | Unique nullifier per claim |
+| Claim counter manipulation | Counter stored on-chain, verified in contract |
+
+### 10.9 Migration Path
+
+#### Phase 1: Database & Backend
+1. Add `claim_history` table
+2. Add new API endpoints
+3. Update claim processor to track history
+
+#### Phase 2: Contract Update
+1. Deploy new contract with updated nullifier logic
+2. Add claim counter to ClaimAuthorization
+3. Update MPC computation
+
+#### Phase 3: Frontend
+1. Update Position cards with claim history
+2. Add partial claim UI
+3. Show claimable amounts
+
+#### Phase 4: Migration
+1. Existing fully-claimed positions: Mark as completed
+2. Existing partial positions: Calculate claimed from on-chain data
+3. New positions: Use new flow
+
+### 10.10 Implementation Summary
+
+| Component | Changes Required | Effort |
+|-----------|-----------------|--------|
+| **Smart Contract** | Nullifier logic, ClaimAuth struct, validation | High |
+| **MPC Circuit** | Return new_claimed_amount, handle partials | Medium |
+| **Backend DB** | claim_history table, position tracking | Low |
+| **Backend API** | New endpoints, claim processor updates | Medium |
+| **Frontend UI** | Claim history, partial claim modal, status | Medium |
+
+---
+
+## 11. Sources & References
 
 ### USDC & Circle CCTP (Cross-Chain)
 - [Circle CCTP Documentation](https://developers.circle.com/cctp) - Main CCTP docs

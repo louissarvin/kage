@@ -7,7 +7,13 @@
 // On-chain hooks
 export { useProgram, useProvider } from './useProgram'
 export { useOrganization, useAllOrganizations } from './useOrganization'
-export { usePositions, usePosition, usePositionAggregates, useEmployeePositions } from './usePositions'
+export {
+  usePositions,
+  usePosition,
+  usePositionAggregates,
+  useEmployeePositions, // @deprecated - use useMyPositions instead
+  useMyPositions, // New: fetches positions from database
+} from './usePositions'
 
 // Backend hooks
 export {
@@ -17,12 +23,22 @@ export {
   useSlugAvailability,
 } from './useBackend'
 
+// Vault keys (Arcium MPC retrieval)
+export { useVaultKeys } from './useVaultKeys'
+
 // Types
 export type { UseOrganizationResult } from './useOrganization'
-export type { UsePositionsResult, PositionWithStats } from './usePositions'
+export type {
+  UsePositionsResult,
+  PositionWithStats,
+  UseMyPositionsResult,
+  MyPositionWithStats,
+  OnChainPositionData,
+} from './usePositions'
 export type {
   UseLinksResult,
   UseStealthKeysResult,
   UseLookupEmployeeResult,
   UseSlugAvailabilityResult,
 } from './useBackend'
+export type { UseVaultKeysResult } from './useVaultKeys'

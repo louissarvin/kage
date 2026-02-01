@@ -89,3 +89,52 @@ export type {
   MetaKeysRetrievedEvent,
   DecryptedMetaKeys,
 } from './metaKeysVault'
+
+// Compressed positions (Light Protocol)
+export {
+  // RPC initialization
+  createLightRpc,
+  // Address derivation
+  deriveCompressedPositionAddress,
+  // Serialization helpers
+  serializeValidityProof,
+  serializePackedAddressTreeInfo,
+  serializeCompressedAccountMeta,
+  serializeCompressedAccountMetaForUpdate,
+  // Account parsing
+  parseCompressedPositionData,
+  // Remaining accounts builders
+  buildLightRemainingAccountsFromTrees,
+  buildLightRemainingAccountsForUpdate,
+  // Core operations
+  createCompressedVestingPosition,
+  fetchCompressedPosition,
+  fetchCompressedPositionForClaim,
+  authorizeClaimCompressed,
+  buildAuthorizeClaimInstruction,
+  updateCompressedPositionClaimed,
+  // Utilities
+  createNullifier as createNullifierAsync,
+  waitForCompressedAccount,
+  getAddressMerkleTree,
+  getDefaultStateTreeAccounts,
+  // Employee scanning
+  scanCompressedPositionsForEmployee,
+  fetchAllCompressedPositions,
+} from './compressedPosition'
+
+// Re-export Light Protocol utilities for convenience
+export { bn, defaultTestStateTreeAccounts } from '@lightprotocol/stateless.js'
+
+export type {
+  CompressedPositionData,
+  CompressedPositionWithAccount,
+  CreateCompressedPositionParams,
+  CreateCompressedPositionResult,
+  AuthorizeClaimCompressedParams,
+  UpdateCompressedPositionParams,
+  CompressedPositionWithAddress,
+} from './compressedPosition'
+
+// Re-export Light Protocol Rpc type for TypeScript
+export type { Rpc } from '@lightprotocol/stateless.js'
