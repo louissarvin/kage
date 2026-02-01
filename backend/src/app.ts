@@ -50,7 +50,7 @@ export async function buildApp() {
   await app.register(cors, {
     origin: config.isDev
       ? true
-      : [config.appUrl, 'https://kage.ink'],
+      : [config.appUrl, 'https://kage.ink', "https://kage-zeta.vercel.app/", "https://www.kage.ink"],
     credentials: true,
   })
 
