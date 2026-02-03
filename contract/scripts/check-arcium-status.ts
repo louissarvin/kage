@@ -8,7 +8,7 @@ import {
   getArciumProgramId,
 } from "@arcium-hq/client";
 
-const PROGRAM_ID = new PublicKey("3bPHRjdQb1a6uxE5TAVwJRMBCLdjAwsorNKJgwAALGbA");
+const PROGRAM_ID = new PublicKey("6KLNfkNWdqPCdzPVMivEHSt3FR2NLnHX4w1T76kiFqp2");
 const ARCIUM_PROGRAM_ID = getArciumProgramId();
 
 async function main() {

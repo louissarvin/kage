@@ -1,5 +1,5 @@
 {
-  "address": "3bPHRjdQb1a6uxE5TAVwJRMBCLdjAwsorNKJgwAALGbA",
+  "address": "6KLNfkNWdqPCdzPVMivEHSt3FR2NLnHX4w1T76kiFqp2",
   "metadata": {
     "name": "contract",
     "version": "0.1.0",
@@ -6206,16 +6206,8 @@
             }
           },
           {
-            "name": "fallback_clusters",
-            "type": {
-              "vec": "u32"
-            }
-          },
-          {
-            "name": "rejected_clusters",
-            "type": {
-              "vec": "u32"
-            }
+            "name": "lut_offset_slot",
+            "type": "u64"
           },
           {
             "name": "computation_definitions",

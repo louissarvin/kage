@@ -23,6 +23,8 @@ import {
   getClusterAccAddress,
   getFeePoolAccAddress,
   getClockAccAddress,
+  getLookupTableAddress,
+  getArciumProgram,
   x25519,
 } from '@arcium-hq/client'
 import { config } from '../config/index.js'

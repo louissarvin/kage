@@ -4,7 +4,7 @@
     "": {
       "name": "@shadowvest/backend",
       "dependencies": {
-        "@arcium-hq/client": "0.6.6",
+        "@arcium-hq/client": "0.7.0",
         "@coral-xyz/anchor": "0.32.1",
         "@fastify/cors": "^9.0.0",
         "@fastify/jwt": "^8.0.0",
@@ -36,7 +36,7 @@
     },
   },
   "packages": {
-    "@arcium-hq/client": ["@arcium-hq/client@0.6.6", "", { "dependencies": { "@coral-xyz/anchor": "0.32.1", "@noble/curves": "^1.9.5", "@noble/hashes": "^1.7.1", "@solana/web3.js": "^1.95.4" } }, "sha512-5ruPFkvG+ihuwOp2DeD2OMNjEYvaw2aMq2MHfxkhAEGZSLrRX3+GtfU3oAX+hf/JIo97lHNcw9azHXUej695RQ=="],
+    "@arcium-hq/client": ["@arcium-hq/client@0.7.0", "", { "dependencies": { "@coral-xyz/anchor": "0.32.1", "@noble/curves": "^1.9.5", "@noble/hashes": "^1.7.1", "@solana/web3.js": "^1.95.4" } }, "sha512-/TL3F6jJ9kmUDwFu2kVOQUTek8T+syeKXBTaQvQtHni9eF89IKNpcKBZiD5rpZOMxw/LEOvlHckL2I/RwVfucQ=="],
 
     "@babel/runtime": ["@babel/runtime@7.28.6", "", {}, "sha512-05WQkdpL9COIMz4LjTxGpPNCdlpyimKppYNoJ5Di5EUObifl8t4tuLuUBBZEpoLYOmfvIWrsp9fCl0HoPRVTdA=="],
 

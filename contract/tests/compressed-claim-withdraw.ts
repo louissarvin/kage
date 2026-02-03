@@ -38,6 +38,8 @@ import {
   getClusterAccAddress,
   getFeePoolAccAddress,
   getClockAccAddress,
+  getLookupTableAddress,
+  getArciumProgram,
   x25519,
   getArciumAccountBaseSeed,
 } from "@arcium-hq/client";
@@ -81,7 +83,7 @@ import { expect } from "chai";
  * 7. Withdraw tokens from vault to destination
  *
  * Prerequisites:
- * - Deployed program: 3bPHRjdQb1a6uxE5TAVwJRMBCLdjAwsorNKJgwAALGbA
+ * - Deployed program: 6KLNfkNWdqPCdzPVMivEHSt3FR2NLnHX4w1T76kiFqp2
  * - Arcium cluster 456 (devnet)
  * - Helius RPC with ZK Compression support (ANCHOR_PROVIDER_URL or RPC_ENDPOINT)
  * - Funded wallet at ~/.config/solana/id.json
@@ -1579,7 +1581,7 @@ async function initCompDef(
     "ComputationDefinitionAccount",
   );
   const offset = getCompDefAccOffset(circuitName);
-  const provider = anchor.getProvider();
+  const provider = anchor.getProvider() as anchor.AnchorProvider;
 
   const compDefPDA = PublicKey.findProgramAddressSync(
     [baseSeedCompDefAcc, program.programId.toBuffer(), offset],
@@ -1593,6 +1595,12 @@ async function initCompDef(
     return "already_initialized";
   }
 
+  // Get LUT address from MXE account (v0.7.0 requirement)
+  const mxeAccountAddr = getMXEAccAddress(program.programId);
+  const arciumProgram = getArciumProgram(provider);
+  const mxeAcc = await arciumProgram.account.mxeAccount.fetch(mxeAccountAddr);
+  const lutAddress = getLookupTableAddress(program.programId, mxeAcc.lutOffsetSlot);
+
   let sig: string;
   if (circuitName === "init_position") {
     sig = await program.methods
@@ -1600,7 +1608,9 @@ async function initCompDef(
       .accountsPartial({
         compDefAccount: compDefPDA,
         payer: owner.publicKey,
-        mxeAccount: getMXEAccAddress(program.programId),
+        mxeAccount: mxeAccountAddr,
+        addressLookupTable: lutAddress,
+        lutProgram: AddressLookupTableProgram.programId,
       })
       .signers([owner])
       .rpc({ commitment: "confirmed" });
@@ -1610,7 +1620,9 @@ async function initCompDef(
       .accountsPartial({
         compDefAccount: compDefPDA,
         payer: owner.publicKey,
-        mxeAccount: getMXEAccAddress(program.programId),
+        mxeAccount: mxeAccountAddr,
+        addressLookupTable: lutAddress,
+        lutProgram: AddressLookupTableProgram.programId,
       })
       .signers([owner])
       .rpc({ commitment: "confirmed" });

@@ -12,7 +12,7 @@
     "test:claim": "ts-mocha -p ./tsconfig.json -t 1000000 tests/claim-withdraw.ts"
   },
   "dependencies": {
-    "@arcium-hq/client": "^0.6.6",
+    "@arcium-hq/client": "^0.7.0",
     "@coral-xyz/anchor": "0.32.1",
     "@lightprotocol/compressed-token": "0.22.1-alpha.8",
     "@lightprotocol/stateless.js": "0.22.1-alpha.8",

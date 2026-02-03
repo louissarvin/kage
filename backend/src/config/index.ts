@@ -14,7 +14,7 @@ export const config = {
 
   // Solana
   solanaRpcUrl: process.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com',
-  shadowvestProgramId: process.env.SHADOWVEST_PROGRAM_ID || '3bPHRjdQb1a6uxE5TAVwJRMBCLdjAwsorNKJgwAALGbA',
+  shadowvestProgramId: process.env.SHADOWVEST_PROGRAM_ID || '6KLNfkNWdqPCdzPVMivEHSt3FR2NLnHX4w1T76kiFqp2',
   serviceKeypair: process.env.SERVICE_KEYPAIR || '',
   lightRpcUrl: process.env.LIGHT_RPC_URL || 'https://devnet.helius-rpc.com',
   arciumClusterOffset: parseInt(process.env.ARCIUM_CLUSTER_OFFSET || '456', 10),

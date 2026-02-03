@@ -5,12 +5,13 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { AddressLookupTableProgram, PublicKey, Keypair, Connection } from "@solana/web3.js";
-import BN from "bn.js";
 import {
   getCompDefAccOffset,
   getCompDefAccAddress,
   getMXEAccAddress,
   getArciumProgramId,
+  getLookupTableAddress,
+  getArciumProgram,
 } from "@arcium-hq/client";
 import * as fs from "fs";
 import * as os from "os";
@@ -18,15 +19,7 @@ import * as os from "os";
 // Standard Solana Address Lookup Table program
 const LUT_PROGRAM_ID = AddressLookupTableProgram.programId;
 
-// Custom function to compute LUT address (avoiding client library BN issue)
-function getLookupTableAddress(mxeProgramId: PublicKey, lutIndex: number = 0): PublicKey {
-  const mxeAccount = getMXEAccAddress(mxeProgramId);
-  const lutIndexBuffer = new BN(lutIndex).toArrayLike(Buffer, 'le', 8);
-  const seeds = [mxeAccount.toBuffer(), lutIndexBuffer];
-  return PublicKey.findProgramAddressSync(seeds, AddressLookupTableProgram.programId)[0];
-}
-
-const PROGRAM_ID = new PublicKey("3bPHRjdQb1a6uxE5TAVwJRMBCLdjAwsorNKJgwAALGbA");
+const PROGRAM_ID = new PublicKey("6KLNfkNWdqPCdzPVMivEHSt3FR2NLnHX4w1T76kiFqp2");
 
 // Load IDL
 const idlPath = "/Users/macbookair/Documents/kage/frontend/src/lib/sdk/idl.json";
@@ -46,9 +39,17 @@ async function main() {
 
   const program = new Program(idl, provider);
 
+  // Get Arcium program and fetch MXE account for LUT offset
+  const arciumProgram = getArciumProgram(provider);
+  const mxeAccountAddr = getMXEAccAddress(PROGRAM_ID);
+  const mxeAcc = await arciumProgram.account.mxeAccount.fetch(mxeAccountAddr);
+  const lutPDA = getLookupTableAddress(PROGRAM_ID, mxeAcc.lutOffsetSlot);
+
   console.log("=== Re-initializing Computation Definitions ===");
   console.log("Program ID:", PROGRAM_ID.toBase58());
   console.log("Payer:", payer.publicKey.toBase58());
+  console.log("LUT Offset Slot:", mxeAcc.lutOffsetSlot.toString());
+  console.log("LUT PDA:", lutPDA.toBase58());
 
   const compDefs = [
     "store_meta_keys",
@@ -61,7 +62,6 @@ async function main() {
     const compDefOffset = getCompDefAccOffset(compDefName);
     const compDefOffsetNum = Buffer.from(compDefOffset).readUInt32LE();
     const compDefPDA = getCompDefAccAddress(PROGRAM_ID, compDefOffsetNum);
-    const lutPDA = getLookupTableAddress(PROGRAM_ID, compDefOffsetNum);
 
     console.log("Comp Def PDA:", compDefPDA.toBase58());
     console.log("LUT PDA:", lutPDA.toBase58());

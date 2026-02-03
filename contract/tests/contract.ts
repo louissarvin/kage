@@ -1,7 +1,7 @@
 import "dotenv/config";
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
-import { PublicKey, Keypair, ComputeBudgetProgram, Transaction } from "@solana/web3.js";
+import { PublicKey, Keypair, ComputeBudgetProgram, Transaction, AddressLookupTableProgram } from "@solana/web3.js";
 import { Contract } from "../target/types/contract";
 import { randomBytes, createHash } from "crypto";
 import {
@@ -23,6 +23,8 @@ import {
   getClusterAccAddress,
   getFeePoolAccAddress,
   getClockAccAddress,
+  getLookupTableAddress,
+  getArciumProgram,
   x25519,
 } from "@arcium-hq/client";
 import * as fs from "fs";
@@ -432,7 +434,7 @@ async function initCompDef(
     "ComputationDefinitionAccount",
   );
   const offset = getCompDefAccOffset(circuitName);
-  const provider = anchor.getProvider();
+  const provider = anchor.getProvider() as anchor.AnchorProvider;
 
   const compDefPDA = PublicKey.findProgramAddressSync(
     [baseSeedCompDefAcc, program.programId.toBuffer(), offset],
@@ -450,35 +452,47 @@ async function initCompDef(
     return "already_initialized";
   }
 
+  // Get LUT address from MXE account (v0.7.0 requirement)
+  const mxeAccountAddr = getMXEAccAddress(program.programId);
+  const arciumProgram = getArciumProgram(provider);
+  const mxeAcc = await arciumProgram.account.mxeAccount.fetch(mxeAccountAddr);
+  const lutAddress = getLookupTableAddress(program.programId, mxeAcc.lutOffsetSlot);
+
   // Call the appropriate init method based on circuit name
   let sig: string;
   if (circuitName === "init_position") {
     sig = await program.methods
       .initInitPositionCompDef()
-      .accounts({
+      .accountsPartial({
         compDefAccount: compDefPDA,
         payer: owner.publicKey,
-        mxeAccount: getMXEAccAddress(program.programId),
+        mxeAccount: mxeAccountAddr,
+        addressLookupTable: lutAddress,
+        lutProgram: AddressLookupTableProgram.programId,
       })
       .signers([owner])
       .rpc({ commitment: "confirmed" });
   } else if (circuitName === "calculate_vested") {
     sig = await program.methods
       .initCalculateVestedCompDef()
-      .accounts({
+      .accountsPartial({
         compDefAccount: compDefPDA,
         payer: owner.publicKey,
-        mxeAccount: getMXEAccAddress(program.programId),
+        mxeAccount: mxeAccountAddr,
+        addressLookupTable: lutAddress,
+        lutProgram: AddressLookupTableProgram.programId,
       })
       .signers([owner])
       .rpc({ commitment: "confirmed" });
   } else if (circuitName === "process_claim") {
     sig = await program.methods
       .initProcessClaimCompDef()
-      .accounts({
+      .accountsPartial({
         compDefAccount: compDefPDA,
         payer: owner.publicKey,
-        mxeAccount: getMXEAccAddress(program.programId),
+        mxeAccount: mxeAccountAddr,
+        addressLookupTable: lutAddress,
+        lutProgram: AddressLookupTableProgram.programId,
       })
       .signers([owner])
       .rpc({ commitment: "confirmed" });

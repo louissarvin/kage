@@ -1,7 +1,7 @@
 import { PublicKey } from '@solana/web3.js'
 
 // Program ID - matches contract/programs/contract/src/lib.rs
-export const PROGRAM_ID = new PublicKey('3bPHRjdQb1a6uxE5TAVwJRMBCLdjAwsorNKJgwAALGbA')
+export const PROGRAM_ID = new PublicKey('6KLNfkNWdqPCdzPVMivEHSt3FR2NLnHX4w1T76kiFqp2')
 
 // Cluster configuration
 export const CLUSTER_URL = import.meta.env.VITE_CLUSTER_URL || 'https://api.devnet.solana.com'

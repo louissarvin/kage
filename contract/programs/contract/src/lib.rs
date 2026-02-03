@@ -48,12 +48,12 @@ const COMP_DEF_OFFSET_PROCESS_CLAIM_V2: u32 = comp_def_offset("process_claim_v2"
 const COMP_DEF_OFFSET_STORE_META_KEYS: u32 = comp_def_offset("store_meta_keys");
 const COMP_DEF_OFFSET_FETCH_META_KEYS: u32 = comp_def_offset("fetch_meta_keys");
 
-declare_id!("3bPHRjdQb1a6uxE5TAVwJRMBCLdjAwsorNKJgwAALGbA");
+declare_id!("6KLNfkNWdqPCdzPVMivEHSt3FR2NLnHX4w1T76kiFqp2");
 
 // Light Protocol CPI signer for compressed account operations
 // This PDA is derived from "cpi_authority" seed and our program ID
 pub const LIGHT_CPI_SIGNER: CpiSigner =
-    derive_light_cpi_signer!("3bPHRjdQb1a6uxE5TAVwJRMBCLdjAwsorNKJgwAALGbA");
+    derive_light_cpi_signer!("6KLNfkNWdqPCdzPVMivEHSt3FR2NLnHX4w1T76kiFqp2");
 
 #[arcium_program]
 pub mod contract {
