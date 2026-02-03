@@ -122,7 +122,7 @@ Employee claims vested tokens:
 
 | Network | Program ID |
 |---------|------------|
-| Devnet | `3bPHRjdQb1a6uxE5TAVwJRMBCLdjAwsorNKJgwAALGbA` |
+| Devnet | `6KLNfkNWdqPCdzPVMivEHSt3FR2NLnHX4w1T76kiFqp2` |
 
 ## Links
 
